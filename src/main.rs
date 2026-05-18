@@ -12,6 +12,7 @@ use crate::snapshot::Snapshot;
 ///                 {
 ///                     id: 55, // u64
 ///                     title: "firefox",
+///                     active: false,
 ///                     focused: false,
 ///                     urgent: false,
 ///                     icon: "path/to/icon"

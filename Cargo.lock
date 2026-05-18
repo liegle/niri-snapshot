@@ -600,6 +600,7 @@ version = "0.1.0"
 dependencies = [
  "freedesktop-icons",
  "gtk",
+ "indexmap",
  "linicon",
  "niri-ipc",
  "serde",
