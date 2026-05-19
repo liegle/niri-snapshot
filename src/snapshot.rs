@@ -93,7 +93,10 @@ impl Snapshot {
                     urgent: window.is_urgent,
                     icon: snapshot.icon_cache.lookup(window.app_id),
                     workspace_id: workspace_id,
-                    layout: window.layout.pos_in_scrolling_layout,
+                    layout: window
+                        .layout
+                        .pos_in_scrolling_layout
+                        .map(|(x, y)| (x - 1, y - 1)),
                 })),
             );
         }
@@ -256,11 +259,15 @@ impl Snapshot {
                         found_window_ref.focused = window.is_focused;
                         found_window_ref.urgent = window.is_urgent;
                         found_window_ref.icon = self.icon_cache.lookup(window.app_id);
+                        let layout = window
+                            .layout
+                            .pos_in_scrolling_layout
+                            .map(|(x, y)| (x - 1, y - 1));
                         if found_window_ref.workspace_id != workspace_id {
                             let old_workspace_id = found_window_ref.workspace_id;
                             let old_layout = found_window_ref.layout;
                             found_window_ref.workspace_id = workspace_id;
-                            found_window_ref.layout = window.layout.pos_in_scrolling_layout;
+                            found_window_ref.layout = layout;
 
                             let Some(old_workspace) = self.workspaces.get_mut(&old_workspace_id)
                             else {
@@ -287,9 +294,9 @@ impl Snapshot {
                                 Ptr(Rc::downgrade(found_window)),
                                 &found_window_ref.layout,
                             );
-                        } else if found_window_ref.layout != window.layout.pos_in_scrolling_layout {
+                        } else if found_window_ref.layout != layout {
                             let old_layout = found_window_ref.layout;
-                            found_window_ref.layout = window.layout.pos_in_scrolling_layout;
+                            found_window_ref.layout = layout;
 
                             let Some(workspace) = self.workspaces.get_mut(&workspace_id) else {
                                 eprintln!(
@@ -346,6 +353,23 @@ fn remove_from_old_workspace(
         column.remove(y);
         if column.is_empty() {
             columns.remove(x);
+            for column in &mut columns[x..] {
+                for window in column {
+                    if let Some(window) = window.0.upgrade() {
+                        if let Some((x, _)) = window.borrow_mut().layout.as_mut() {
+                            *x = *x - 1;
+                        }
+                    }
+                }
+            }
+        } else {
+            for window in &mut column[y..] {
+                if let Some(window) = window.0.upgrade() {
+                    if let Some((_, y)) = window.borrow_mut().layout.as_mut() {
+                        *y = *y - 1;
+                    }
+                }
+            }
         }
     } else {
         let floatings = &mut old_workspace.borrow_mut().floatings;
