@@ -9,7 +9,7 @@ use crate::icon;
 
 #[derive(serde::Serialize)]
 pub struct Snapshot {
-    outputs: HashMap<String, Output>,
+    outputs: HashMap<String, Vec<Ptr<Workspace>>>,
     focused_workspace_id: Option<u64>,
     focused_window_id: Option<u64>,
 
@@ -23,14 +23,9 @@ pub struct Snapshot {
 }
 
 #[derive(serde::Serialize, Debug, Default)]
-struct Output {
-    workspaces: Vec<Ptr<Workspace>>,
-    active_workspace_id: Option<u64>,
-}
-
-#[derive(serde::Serialize, Debug, Default)]
 struct Workspace {
     id: u64,
+    active: bool,
     urgent: bool,
     columns: Vec<Vec<Ptr<Window>>>,
     floatings: Vec<Ptr<Window>>,
@@ -92,7 +87,7 @@ impl Snapshot {
     }
 
     pub fn print(&self) {
-        println!("{}", serde_json::to_string_pretty(&self).unwrap());
+        println!("{}", serde_json::to_string(&self).unwrap());
     }
 
     pub fn update(&mut self, evt: niri_ipc::Event) -> bool {
@@ -114,16 +109,19 @@ impl Snapshot {
                 true
             }
             niri_ipc::Event::WorkspaceActivated { id, focused } => {
-                // Can't create dummy output so we have to throw an error
-                let Some(workspace) = self.workspaces.get(&id) else {
-                    eprintln!("Received WorkspaceActivated id not found: {id}");
+                let output_name = self.workspaces.entry(id).or_default().borrow().output.clone();
+                let Some(output) = self.outputs.get_mut(&output_name) else {
+                    eprintln!("Can't find output of workspace {id}");
                     return false;
                 };
-                let Some(output) = self.outputs.get_mut(&workspace.borrow().output) else {
-                    eprintln!("Received WorkspaceActivated but workspace's output not found");
-                    return false;
-                };
-                output.active_workspace_id = Some(id);
+                for ws in output {
+                    if let Some(ws) = ws.0.upgrade() {
+                        let ws_id = ws.borrow().id;
+                        ws.borrow_mut().active = ws_id == id;
+                    } else {
+                        eprintln!("Operating null workspace in output {}", &output_name);
+                    }
+                }
                 if focused {
                     self.focused_workspace_id = Some(id);
                 }
@@ -185,7 +183,10 @@ impl Snapshot {
                         urgent: window.is_urgent,
                         icon: self.icon_cache.lookup(window.app_id),
                         workspace_id: workspace_id,
-                        layout: window.layout.pos_in_scrolling_layout,
+                        layout: window
+                            .layout
+                            .pos_in_scrolling_layout
+                            .map(|(x, y)| (x - 1, y - 1)),
                     }));
                     let workspace = self.workspaces.entry(workspace_id).or_default();
                     add_to_workspace(workspace, &window_ptr);
@@ -218,7 +219,10 @@ impl Snapshot {
             niri_ipc::Event::WindowLayoutsChanged { changes } => {
                 for change in changes {
                     let window = self.windows.entry(change.0).or_default();
-                    let workspace = self.workspaces.entry(window.borrow().workspace_id).or_default();
+                    let workspace = self
+                        .workspaces
+                        .entry(window.borrow().workspace_id)
+                        .or_default();
                     remove_from_old_workspace(workspace, &window.borrow());
                     add_to_workspace(workspace, window);
                 }
@@ -243,6 +247,7 @@ fn init_workspaces(
             workspace.id,
             Rc::new(RefCell::new(Workspace {
                 id: workspace.id,
+                active: workspace.is_active,
                 urgent: workspace.is_urgent,
                 columns: Vec::new(),
                 floatings: Vec::new(),
@@ -296,7 +301,7 @@ fn init_windows(
 fn init_outputs(
     workspaces: &HashMap<u64, Rc<RefCell<Workspace>>>,
     windows: &HashMap<u64, Rc<RefCell<Window>>>,
-) -> HashMap<String, Output> {
+) -> HashMap<String, Vec<Ptr<Workspace>>> {
     let mut workspace_windows = HashMap::<_, (Vec<_>, Vec<Vec<_>>)>::new();
     for window in windows.values() {
         let (floatings, columns) = workspace_windows
@@ -316,12 +321,11 @@ fn init_outputs(
         }
     }
 
-    let mut outputs = HashMap::<_, Output>::new();
+    let mut outputs = HashMap::<_, Vec<Ptr<Workspace>>>::new();
     for (id, workspace) in workspaces.iter() {
         outputs
             .entry(workspace.borrow().output.clone())
             .or_default()
-            .workspaces
             .push(Ptr(Rc::downgrade(&workspace)));
         if let Some((floatings, columns)) = workspace_windows.remove(id) {
             let mut workspace = workspace.borrow_mut();
@@ -334,12 +338,10 @@ fn init_outputs(
     }
 
     for output in outputs.values_mut() {
-        output
-            .workspaces
-            .sort_by_key(|workspace| match workspace.0.upgrade() {
-                Some(workspace) => workspace.borrow().idx,
-                None => u8::MAX,
-            });
+        output.sort_by_key(|workspace| match workspace.0.upgrade() {
+            Some(workspace) => workspace.borrow().idx,
+            None => u8::MAX,
+        });
     }
     outputs
 }
