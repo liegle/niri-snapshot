@@ -48,11 +48,11 @@ fn main() -> std::io::Result<()> {
         ))?;
         return Ok(());
     }
+    run()
+}
 
-    let debug = args.len() == 2 && &args[1] == "--debug";
-
+fn run() -> std::io::Result<()> {
     let mut socket = niri_ipc::socket::Socket::connect()?;
-
     let workspaces = match socket.send(niri_ipc::Request::Workspaces).unwrap().unwrap() {
         niri_ipc::Response::Workspaces(w) => w,
         r @ _ => panic!("Expected workspaces but got {r:?}"),
@@ -67,15 +67,49 @@ fn main() -> std::io::Result<()> {
 
     let reply = socket.send(niri_ipc::Request::EventStream)?;
     if let Ok(niri_ipc::Response::Handled) = reply {
+        let mut cache = Vec::new();
         let mut read_event = socket.read_events();
         while let Ok(evt) = read_event() {
-            if debug {
-                eprintln!("{:?}", &evt);
-            }
-            if snapshot.update(evt) {
-                snapshot.print();
-            }
+            update(&mut snapshot, evt, &mut cache);
         }
     }
     Ok(())
+}
+
+fn update(snapshot: &mut Snapshot, evt: niri_ipc::Event, cache: &mut Vec<niri_ipc::Event>) {
+    match snapshot.update(&evt) {
+        Update::Consume => {
+            let mut cosumed = true;
+            while cosumed {
+                cosumed = false;
+                cache.retain_mut(|evt| match snapshot.update(&evt) {
+                    Update::Consume | Update::Ignore => {
+                        cosumed = true;
+                        false
+                    }
+                    Update::Cache => true,
+                });
+            }
+            snapshot.print();
+        }
+        Update::Cache => {
+            let _ = cache.push(evt);
+        }
+        _ => (),
+    }
+}
+
+enum Update {
+    Consume,
+    Ignore,
+    Cache,
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    #[ignore = "only forced test"]
+    fn full_compare() -> std::io::Result<()> {
+        Ok(())
+    }
 }

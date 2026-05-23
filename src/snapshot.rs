@@ -5,7 +5,7 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use crate::icon;
+use crate::{Update, icon::IconCache};
 
 #[derive(serde::Serialize)]
 pub struct Snapshot {
@@ -19,7 +19,7 @@ pub struct Snapshot {
     #[serde(skip)]
     windows: HashMap<u64, Rc<RefCell<Window>>>,
     #[serde(skip)]
-    icon_cache: icon::IconCache,
+    icon_cache: IconCache,
 }
 
 #[derive(serde::Serialize, Debug, Default)]
@@ -41,10 +41,8 @@ struct Workspace {
 #[derive(serde::Serialize, Clone, Debug, Default)]
 struct Window {
     id: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
     urgent: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     icon: Option<String>,
 
     // not serialize fields
@@ -71,9 +69,9 @@ impl<T: serde::Serialize> serde::Serialize for Ptr<T> {
 
 impl Snapshot {
     pub fn new(workspaces: Vec<niri_ipc::Workspace>, windows: Vec<niri_ipc::Window>) -> Self {
-        let (workspaces, focused_workspace_id) = init_workspaces(workspaces);
-        let mut icon_cache = icon::IconCache::new();
-        let (windows, focused_window_id) = init_windows(windows, &mut icon_cache);
+        let (workspaces, focused_workspace_id) = init_workspaces(&workspaces);
+        let mut icon_cache = IconCache::new();
+        let (windows, focused_window_id) = init_windows(&windows, &mut icon_cache);
         let outputs = init_outputs(&workspaces, &windows);
 
         Self {
@@ -90,109 +88,126 @@ impl Snapshot {
         println!("{}", serde_json::to_string(&self).unwrap());
     }
 
-    pub fn update(&mut self, evt: niri_ipc::Event) -> bool {
-        // For all `entry(xxx).or_default()`s in this function:
-        // `or_default` is used to create a dummy entry here to prevent
-        // wrong event sending order, in which case this entry will be
-        // modified by next events.
+    pub fn update(&mut self, evt: &niri_ipc::Event) -> Update {
         match evt {
             niri_ipc::Event::WorkspacesChanged { workspaces } => {
-                let (workspaces, focused_workspace_id) = init_workspaces(workspaces);
+                let (workspaces, focused_workspace_id) = init_workspaces(&workspaces);
                 let outputs = init_outputs(&workspaces, &self.windows);
                 self.outputs = outputs;
                 self.focused_workspace_id = focused_workspace_id;
                 self.workspaces = workspaces;
-                false
+                Update::Consume
             }
             niri_ipc::Event::WorkspaceUrgencyChanged { id, urgent } => {
-                self.workspaces.entry(id).or_default().borrow_mut().urgent = urgent;
-                true
+                match self.workspaces.get_mut(&id) {
+                    Some(workspace) => {
+                        workspace.borrow_mut().urgent = *urgent;
+                        Update::Consume
+                    }
+                    None => Update::Cache,
+                }
             }
             niri_ipc::Event::WorkspaceActivated { id, focused } => {
-                let output_name = self.workspaces.entry(id).or_default().borrow().output.clone();
-                let Some(output) = self.outputs.get_mut(&output_name) else {
-                    eprintln!("Can't find output of workspace {id}");
-                    return false;
+                let Some(workspace) = self.workspaces.get(&id) else {
+                    return Update::Cache;
+                };
+                let output_name = &workspace.borrow().output;
+                let Some(output) = self.outputs.get_mut(output_name) else {
+                    return Update::Cache;
                 };
                 for ws in output {
                     if let Some(ws) = ws.0.upgrade() {
                         let ws_id = ws.borrow().id;
-                        ws.borrow_mut().active = ws_id == id;
+                        if let Ok(ws) = &mut ws.try_borrow_mut() {
+                            ws.active = ws_id == *id;
+                        }
                     } else {
                         eprintln!("Operating null workspace in output {}", &output_name);
                     }
                 }
-                if focused {
-                    self.focused_workspace_id = Some(id);
+                if *focused {
+                    self.focused_workspace_id = Some(*id);
                 }
-                true
+                Update::Consume
             }
             niri_ipc::Event::WorkspaceActiveWindowChanged {
                 workspace_id,
                 active_window_id,
-            } => {
-                self.workspaces
-                    .entry(workspace_id)
-                    .or_default()
-                    .borrow_mut()
-                    .active_window_id = active_window_id;
-                true
-            }
+            } => match self.workspaces.get_mut(&workspace_id) {
+                Some(workspace) => {
+                    if let Some(id) = active_window_id {
+                        match self.windows.get(&id) {
+                            Some(_) => {
+                                workspace.borrow_mut().active_window_id = *active_window_id;
+                                Update::Consume
+                            }
+                            None => Update::Cache,
+                        }
+                    } else {
+                        workspace.borrow_mut().active_window_id = *active_window_id;
+                        Update::Consume
+                    }
+                }
+                None => Update::Cache,
+            },
             niri_ipc::Event::WindowsChanged { windows: _ } => {
                 // Ignored because this will only be sent on init
-                false
+                Update::Ignore
             }
             niri_ipc::Event::WindowOpenedOrChanged { window } => {
                 let Some(workspace_id) = window.workspace_id else {
                     eprintln!("Received WindowOpenedOrChanged with None workspace_id");
-                    return false;
+                    return Update::Ignore;
+                };
+                if !self.workspaces.contains_key(&workspace_id) {
+                    return Update::Cache;
                 };
 
+                if window.is_focused {
+                    self.focused_window_id = Some(window.id);
+                }
                 if let Some(found_window) = self.windows.get(&window.id) {
                     // Changed
                     // only for workspace_id / is_floating / title / app_id
                     // Or opened but was sent in wrong order
                     let mut found_window_ref = found_window.borrow_mut();
+                    let Some(old_workspace) =
+                        self.workspaces.get_mut(&found_window_ref.workspace_id)
+                    else {
+                        return Update::Cache;
+                    };
                     found_window_ref.title = window.title.clone();
-                    found_window_ref.icon = self.icon_cache.lookup(window.app_id);
-                    let layout = window
-                        .layout
-                        .pos_in_scrolling_layout
-                        .map(|(x, y)| (x - 1, y - 1));
-                    if found_window_ref.workspace_id != workspace_id {
-                        let old_workspace = self
-                            .workspaces
-                            .entry(found_window_ref.workspace_id)
-                            .or_default();
-                        remove_from_old_workspace(old_workspace, &found_window_ref);
-                        found_window_ref.layout = layout;
-                        let workspace = self.workspaces.entry(workspace_id).or_default();
-                        add_to_workspace(workspace, found_window);
-                    } else if found_window_ref.layout.is_none() != window.is_floating {
-                        let workspace = self.workspaces.entry(workspace_id).or_default();
-                        remove_from_old_workspace(workspace, &found_window_ref);
-                        found_window_ref.layout = layout;
-                        add_to_workspace(workspace, found_window);
+                    found_window_ref.icon = self.icon_cache.lookup(&window.app_id);
+                    if found_window_ref.workspace_id != workspace_id
+                        || found_window_ref.layout != window.layout.pos()
+                    {
+                        remove_from_old_workspace(
+                            &mut old_workspace.borrow_mut(),
+                            &found_window_ref,
+                        );
+                        found_window_ref.layout = window.layout.pos();
+                        add_to_workspace(
+                            &mut self.workspaces.get_mut(&workspace_id).unwrap(/*Already check up*/).borrow_mut(),
+                            &found_window,
+                        );
                     }
-                    true
                 } else {
                     // Opened
                     let window_ptr = Rc::new(RefCell::new(Window {
                         id: window.id,
-                        title: window.title,
+                        title: window.title.clone(),
                         urgent: window.is_urgent,
-                        icon: self.icon_cache.lookup(window.app_id),
+                        icon: self.icon_cache.lookup(&window.app_id),
                         workspace_id: workspace_id,
-                        layout: window
-                            .layout
-                            .pos_in_scrolling_layout
-                            .map(|(x, y)| (x - 1, y - 1)),
+                        layout: window.layout.pos(),
                     }));
-                    let workspace = self.workspaces.entry(workspace_id).or_default();
-                    add_to_workspace(workspace, &window_ptr);
-                    self.windows.insert(window.id, window_ptr);
-                    true
-                }
+                    self.windows.insert(window.id, window_ptr.clone());
+                    add_to_workspace(
+                        &mut self.workspaces.get_mut(&workspace_id).unwrap(/*Already check up*/).borrow_mut(),
+                        &window_ptr,
+                    );
+                };
+                Update::Consume
             }
             niri_ipc::Event::WindowClosed { id } => {
                 if let Some(window) = self.windows.remove(&id) {
@@ -200,42 +215,74 @@ impl Snapshot {
                         .workspaces
                         .entry(window.borrow().workspace_id)
                         .or_default();
-                    remove_from_old_workspace(workspace, &window.borrow());
-                    true
+                    remove_from_old_workspace(&mut workspace.borrow_mut(), &window.borrow());
+                    Update::Consume
                 } else {
                     eprintln!("Can't find window to be closed: {id}");
-                    false
+                    Update::Cache
                 }
             }
             niri_ipc::Event::WindowFocusChanged { id } => {
-                self.focused_window_id = id;
-                // TODO: maybe i should check whether this window exists?
-                true
+                if let Some(id) = id {
+                    match self.windows.get(id) {
+                        Some(_) => {
+                            self.focused_window_id = Some(*id);
+                            Update::Consume
+                        }
+                        None => Update::Cache,
+                    }
+                } else {
+                    self.focused_workspace_id = *id;
+                    Update::Consume
+                }
             }
             niri_ipc::Event::WindowUrgencyChanged { id, urgent } => {
-                self.windows.entry(id).or_default().borrow_mut().urgent = urgent;
-                true
+                match self.windows.get_mut(&id) {
+                    Some(window) => {
+                        window.borrow_mut().urgent = *urgent;
+                        Update::Consume
+                    }
+                    None => Update::Cache,
+                }
             }
             niri_ipc::Event::WindowLayoutsChanged { changes } => {
+                let mut windows = Vec::with_capacity(changes.len());
                 for change in changes {
-                    let window = self.windows.entry(change.0).or_default();
-                    let workspace = self
-                        .workspaces
-                        .entry(window.borrow().workspace_id)
-                        .or_default();
-                    remove_from_old_workspace(workspace, &window.borrow());
-                    add_to_workspace(workspace, window);
+                    let window = match self.windows.get(&change.0) {
+                        Some(window) => window.clone(),
+                        None => return Update::Cache,
+                    };
+                    let workspace_id = window.borrow().workspace_id;
+                    match self.workspaces.get(&workspace_id) {
+                        Some(workspace) => windows.push((window, workspace.clone())),
+                        None => return Update::Cache,
+                    }
                 }
-                true
+                for ((window, workspace), change) in windows.iter().zip(changes) {
+                    remove_from_old_workspace(&mut workspace.borrow_mut(), &window.borrow());
+                    window.borrow_mut().layout = change.1.pos();
+                    add_to_workspace(&mut workspace.borrow_mut(), window);
+                }
+                Update::Consume
             }
-            _ => false,
+            _ => Update::Ignore,
         }
+    }
+}
+
+trait LayoutExt {
+    fn pos(&self) -> Option<(usize, usize)>;
+}
+
+impl LayoutExt for niri_ipc::WindowLayout {
+    fn pos(&self) -> Option<(usize, usize)> {
+        self.pos_in_scrolling_layout.map(|(x, y)| (x - 1, y - 1))
     }
 }
 
 /// Create workspace map from workspace vec sent by niri
 fn init_workspaces(
-    workspaces: Vec<niri_ipc::Workspace>,
+    workspaces: &Vec<niri_ipc::Workspace>,
 ) -> (HashMap<u64, Rc<RefCell<Workspace>>>, Option<u64>) {
     let mut result = HashMap::new();
     let mut focused = None;
@@ -253,7 +300,7 @@ fn init_workspaces(
                 floatings: Vec::new(),
                 active_window_id: workspace.active_window_id,
                 idx: workspace.idx,
-                output: workspace.output.unwrap_or(String::new()),
+                output: workspace.output.clone().unwrap_or(String::new()),
             })),
         );
     }
@@ -262,8 +309,8 @@ fn init_workspaces(
 
 /// Create windows map from windows vec sent by niri
 fn init_windows(
-    windows: Vec<niri_ipc::Window>,
-    icon_cache: &mut icon::IconCache,
+    windows: &Vec<niri_ipc::Window>,
+    icon_cache: &mut IconCache,
 ) -> (HashMap<u64, Rc<RefCell<Window>>>, Option<u64>) {
     let mut result = HashMap::new();
     let mut focused = None;
@@ -283,14 +330,11 @@ fn init_windows(
             window.id,
             Rc::new(RefCell::new(Window {
                 id: window.id,
-                title: window.title,
+                title: window.title.clone(),
                 urgent: window.is_urgent,
-                icon: icon_cache.lookup(window.app_id),
+                icon: icon_cache.lookup(&window.app_id),
                 workspace_id: workspace_id,
-                layout: window
-                    .layout
-                    .pos_in_scrolling_layout
-                    .map(|(x, y)| (x - 1, y - 1)),
+                layout: window.layout.pos(),
             })),
         );
     }
@@ -349,15 +393,14 @@ fn init_outputs(
 /// Remove window from a workspace at its layout with [`remove`]
 ///
 /// [`remove`]: Vec::remove
-fn remove_from_old_workspace(workspace: &mut Rc<RefCell<Workspace>>, window: &Window) {
+fn remove_from_old_workspace(workspace: &mut Workspace, window: &Window) {
     if let Some((x, y)) = window.layout {
-        let columns = &mut workspace.borrow_mut().columns;
+        let workspace_id = workspace.id;
+        let columns = &mut workspace.columns;
         let Some(column) = columns.get_mut(x) else {
             eprintln!(
                 "Window {:?} column {} not found in workspace {}",
-                window.title,
-                x,
-                workspace.borrow().id
+                window.title, x, workspace_id
             );
             return;
         };
@@ -369,8 +412,11 @@ fn remove_from_old_workspace(workspace: &mut Rc<RefCell<Workspace>>, window: &Wi
             return;
         }
         column.remove(y);
+        if column.is_empty() {
+            columns.remove(x);
+        }
     } else {
-        let floatings = &mut workspace.borrow_mut().floatings;
+        let floatings = &mut workspace.floatings;
         floatings.retain(|w| w.0.upgrade().is_some_and(|w| w.borrow().id != window.id));
     }
 }
@@ -379,9 +425,9 @@ fn remove_from_old_workspace(workspace: &mut Rc<RefCell<Workspace>>, window: &Wi
 ///
 /// [`resize`]: Vec::resize
 /// [`index_mut`]: std::ops::IndexMut::index_mut
-fn add_to_workspace(workspace: &mut Rc<RefCell<Workspace>>, window: &Rc<RefCell<Window>>) {
+fn add_to_workspace(workspace: &mut Workspace, window: &Rc<RefCell<Window>>) {
     if let Some((x, y)) = window.borrow().layout {
-        let columns = &mut workspace.borrow_mut().columns;
+        let columns = &mut workspace.columns;
         if columns.len() <= x {
             columns.resize(x + 1, Vec::new());
         }
@@ -391,7 +437,7 @@ fn add_to_workspace(workspace: &mut Rc<RefCell<Workspace>>, window: &Rc<RefCell<
         }
         column[y] = Ptr(Rc::downgrade(&window));
     } else {
-        let floatings = &mut workspace.borrow_mut().floatings;
+        let floatings = &mut workspace.floatings;
         floatings.push(Ptr(Rc::downgrade(&window)));
     }
 }

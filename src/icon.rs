@@ -38,17 +38,17 @@ impl IconCache {
         }
     }
 
-    pub fn lookup(&mut self, key: Option<String>) -> Option<String> {
+    pub fn lookup(&mut self, key: &Option<String>) -> Option<String> {
         let Some(key) = key else {
             return None;
         };
 
-        if let Some(path) = self.map.get(&key) {
+        if let Some(path) = self.map.get(key) {
             return Some(path.clone());
         }
 
-        if let Some(path) = lookup(&key) {
-            self.map.insert(key, path.clone());
+        if let Some(path) = lookup(key) {
+            self.map.insert(key.clone(), path.clone());
             return Some(path);
         }
 
