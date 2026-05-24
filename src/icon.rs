@@ -54,6 +54,22 @@ impl IconCache {
 
         None
     }
+
+    pub fn lookup_no_insert(&self, key: &Option<String>) -> Option<String> {
+        let Some(key) = key else {
+            return None;
+        };
+
+        if let Some(path) = self.map.get(key) {
+            return Some(path.clone());
+        }
+
+        if let Some(path) = lookup(key) {
+            return Some(path);
+        }
+
+        None
+    }
 }
 
 static XDG_DATA_DIRS: LazyLock<Vec<PathBuf>> = LazyLock::new(|| {

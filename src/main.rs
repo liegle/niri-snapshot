@@ -29,14 +29,17 @@
 //! because niri msg doesn't work until this [`issue`] is solved
 //! [`issue`]: https://github.com/niri-wm/niri/issues/647
 
-use std::env;
+use std::{
+    env,
+    io::{self, Error, ErrorKind},
+};
 
 use crate::snapshot::Snapshot;
 
 mod icon;
 mod snapshot;
 
-fn main() -> std::io::Result<()> {
+fn main() -> io::Result<()> {
     let args = env::args().collect::<Vec<String>>();
     if args.len() >= 3 && &args[1] == "ws" {
         let id = args[2].parse::<u64>().unwrap();
@@ -51,52 +54,61 @@ fn main() -> std::io::Result<()> {
     run()
 }
 
-fn run() -> std::io::Result<()> {
+fn run() -> io::Result<()> {
     let mut socket = niri_ipc::socket::Socket::connect()?;
     let workspaces = match socket.send(niri_ipc::Request::Workspaces).unwrap().unwrap() {
         niri_ipc::Response::Workspaces(w) => w,
-        r @ _ => panic!("Expected workspaces but got {r:?}"),
+        r => panic!("Expected workspaces but got {r:?}"),
     };
     let windows = match socket.send(niri_ipc::Request::Windows).unwrap().unwrap() {
         niri_ipc::Response::Windows(w) => w,
-        r @ _ => panic!("Expected windows but got {r:?}"),
+        r => panic!("Expected windows but got {r:?}"),
     };
 
+    let Ok(niri_ipc::Response::Handled) = socket.send(niri_ipc::Request::EventStream)? else {
+        return Err(Error::new(
+            ErrorKind::ConnectionRefused,
+            "Failed to connect to event stream",
+        ));
+    };
+    let mut cache = Vec::new();
     let mut snapshot = Snapshot::new(workspaces, windows);
+    #[cfg(test)]
+    let mut state = niri_ipc::state::EventStreamState::default();
     snapshot.print();
-
-    let reply = socket.send(niri_ipc::Request::EventStream)?;
-    if let Ok(niri_ipc::Response::Handled) = reply {
-        let mut cache = Vec::new();
-        let mut read_event = socket.read_events();
-        while let Ok(evt) = read_event() {
-            update(&mut snapshot, evt, &mut cache);
+    let mut read_event = socket.read_events();
+    while let Ok(evt) = read_event() {
+        #[cfg(test)]
+        {
+            use niri_ipc::state::EventStreamStatePart;
+            state.apply(evt.clone());
         }
-    }
-    Ok(())
-}
-
-fn update(snapshot: &mut Snapshot, evt: niri_ipc::Event, cache: &mut Vec<niri_ipc::Event>) {
-    match snapshot.update(&evt) {
-        Update::Consume => {
-            let mut cosumed = true;
-            while cosumed {
-                cosumed = false;
-                cache.retain_mut(|evt| match snapshot.update(&evt) {
-                    Update::Consume | Update::Ignore => {
-                        cosumed = true;
-                        false
-                    }
-                    Update::Cache => true,
-                });
+        match snapshot.update(&evt) {
+            Update::Consume => {
+                let mut used = true;
+                while used {
+                    used = false;
+                    cache.retain_mut(|evt| match snapshot.update(&evt) {
+                        Update::Consume | Update::Ignore => {
+                            used = true;
+                            false
+                        }
+                        Update::Cache => true,
+                    });
+                }
+                #[cfg(not(test))]
+                snapshot.print();
+                #[cfg(test)]
+                snapshot.verify(&state);
             }
-            snapshot.print();
+            Update::Cache => {
+                let _ = cache.push(evt);
+            }
+            _ => (),
         }
-        Update::Cache => {
-            let _ = cache.push(evt);
-        }
-        _ => (),
     }
+
+    Ok(())
 }
 
 enum Update {
@@ -110,6 +122,6 @@ mod test {
     #[test]
     #[ignore = "only forced test"]
     fn full_compare() -> std::io::Result<()> {
-        Ok(())
+        super::run()
     }
 }
