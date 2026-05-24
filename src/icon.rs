@@ -128,12 +128,12 @@ fn lookup(key: &str) -> Option<String> {
 }
 
 fn lookup_icon(key: &str) -> Option<String> {
-    if let Some(path) = freedesktop_icons::lookup(key).with_size(512).find() {
+    if let Some(path) = freedesktop_icons::lookup(key).with_size(16).find() {
         return convert(path);
     }
 
     if let Some(path) = linicon::lookup_icon(key)
-        .with_size(512)
+        .with_size(16)
         .filter_map(|result| result.ok())
         .next()
     {
