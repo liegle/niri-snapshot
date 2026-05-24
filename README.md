@@ -1,6 +1,6 @@
 # Niri-snapshot
 
-Simple sync logic printing current output, workspace and window state of [niri][1] every time receiving an event from [niri-ipc][2]'s event-stream.
+Simple logic printing current output, workspace and window state of [niri][1] every time receiving an event from [niri-ipc][2]'s event-stream.
 Developed in order to make taskbar in [eww][3]. Maybe useful in other bar solutions.
 Now it is almost usable but may encounter bugs.
 
