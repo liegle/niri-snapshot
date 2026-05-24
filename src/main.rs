@@ -73,15 +73,22 @@ fn run() -> io::Result<()> {
     };
     let mut cache = Vec::new();
     let mut snapshot = Snapshot::new(workspaces, windows);
-    #[cfg(test)]
+    #[cfg(feature = "verify")]
     let mut state = niri_ipc::state::EventStreamState::default();
     snapshot.print();
     let mut read_event = socket.read_events();
+    let mut counter = 0;
     while let Ok(evt) = read_event() {
-        #[cfg(test)]
+        #[cfg(feature = "verify")]
         {
             use niri_ipc::state::EventStreamStatePart;
             state.apply(evt.clone());
+            eprintln!(" ==> \x1B[34m{:?}\x1B[0m", evt);
+        }
+        // Skip first WorkspacesChanged and WindowsChanged
+        if counter <= 1 {
+            counter += 1;
+            continue;
         }
         match snapshot.update(&evt) {
             Update::Consume => {
@@ -96,10 +103,12 @@ fn run() -> io::Result<()> {
                         Update::Cache => true,
                     });
                 }
-                #[cfg(not(test))]
                 snapshot.print();
-                #[cfg(test)]
-                snapshot.verify(&state);
+                #[cfg(feature = "verify")]
+                {
+                    snapshot.verify(&state);
+                    eprintln!(" ==> \x1B[33m{} caches left\x1B[0m", cache.len());
+                }
             }
             Update::Cache => {
                 let _ = cache.push(evt);
@@ -115,13 +124,4 @@ enum Update {
     Consume,
     Ignore,
     Cache,
-}
-
-#[cfg(test)]
-mod test {
-    #[test]
-    #[ignore = "only forced test"]
-    fn full_compare() -> std::io::Result<()> {
-        super::run()
-    }
 }

@@ -55,6 +55,7 @@ impl IconCache {
         None
     }
 
+    #[cfg(feature = "verify")]
     pub fn lookup_no_insert(&self, key: &Option<String>) -> Option<String> {
         let Some(key) = key else {
             return None;

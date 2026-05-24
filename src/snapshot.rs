@@ -88,7 +88,7 @@ impl Snapshot {
         println!("{}", serde_json::to_string(&self).unwrap());
     }
 
-    #[cfg(test)]
+    #[cfg(feature = "verify")]
     pub fn verify(&self, state: &niri_ipc::state::EventStreamState) {
         let mut sb = Vec::new();
 
@@ -106,32 +106,35 @@ impl Snapshot {
                 sb.push(format!("Workspace not found in local: {id}"));
                 continue;
             };
-            let ws = ws.borrow();
-            if ws.id != *id {
-                sb.push(format!("Workspace id wrong, key: {id}, stored: {}", ws.id));
+            let ws_ref = ws.borrow();
+            if ws_ref.id != *id {
+                sb.push(format!(
+                    "Workspace id wrong, key: {id}, stored: {}",
+                    ws_ref.id
+                ));
             }
-            if ws.idx != workspace.idx {
+            if ws_ref.idx != workspace.idx {
                 sb.push(format!(
                     "Workspace {id} idx different, local: {}, state: {}",
-                    ws.idx, workspace.idx
+                    ws_ref.idx, workspace.idx
                 ));
             }
-            if ws.output != workspace.output {
+            if ws_ref.output != workspace.output {
                 sb.push(format!(
                     "Workspace {id} output different, local: {:?}, state: {:?}",
-                    ws.output, workspace.output
+                    ws_ref.output, workspace.output
                 ));
             }
-            if ws.active != workspace.is_active {
+            if ws_ref.active != workspace.is_active {
                 sb.push(format!(
                     "Workspace {id} avtive different, local: {:?}, state: {:?}",
-                    ws.active, workspace.is_active
+                    ws_ref.active, workspace.is_active
                 ));
             }
-            if ws.urgent != workspace.is_urgent {
+            if ws_ref.urgent != workspace.is_urgent {
                 sb.push(format!(
                     "Workspace {id} urgent different, local: {:?}, state: {:?}",
-                    ws.urgent, workspace.is_urgent
+                    ws_ref.urgent, workspace.is_urgent
                 ));
             }
             if workspace.is_focused {
@@ -159,37 +162,79 @@ impl Snapshot {
                 sb.push(format!("Window not found in local: {id}"));
                 continue;
             };
-            let w = w.borrow();
-            if w.id != *id {
-                sb.push(format!("Window id wrong, key: {id}, stored: {}", w.id));
+            let w_ref = w.borrow();
+            if w_ref.id != *id {
+                sb.push(format!("Window id wrong, key: {id}, stored: {}", w_ref.id));
             }
-            // if let Some(workspace_id) = window.workspace_id {
-            //     if w.workspace_id != workspace_id {
-            //         sb.push(format!(
-            //             "Window {id} workspace_id different, local: {}, state: {}",
-            //             w.workspace_id, workspace_id
-            //         ));
-            //     }
-            // } else {
-            //     sb.push(format!("Window {id} workspace id different, local: {}, state: None", w.workspace_id));
-            // };
-            if w.title != window.title {
+            if w_ref.workspace_id != window.workspace_id {
+                sb.push(format!(
+                    "Window {id} workspace_id different, local: {:?}, state: {:?}",
+                    w_ref.workspace_id, window.workspace_id
+                ));
+            } else if let Some(workspace_id) = window.workspace_id {
+                'ws: {
+                    let Some(workspace) = self.workspaces.get(&workspace_id) else {
+                        sb.push(format!("Window {id} workspace {workspace_id} not found"));
+                        break 'ws;
+                    };
+                    let layout = window.layout.pos();
+                    if w_ref.layout != layout {
+                        sb.push(format!(
+                            "Window {id} layout different, local: {:?}, state: {:?}",
+                            w_ref.layout, layout
+                        ));
+                    } else if let Some((x, y)) = layout {
+                        let workspace = workspace.borrow();
+                        let Some(column) = workspace.columns.get(x) else {
+                            sb.push(format!(
+                                "Window {id} is at ({x}, {y}) but this column is not found"
+                            ));
+                            break 'ws;
+                        };
+                        let Some(tile) = column.get(y) else {
+                            sb.push(format!(
+                                "Window {id} is at ({x}, {y}) but this row is not found"
+                            ));
+                            break 'ws;
+                        };
+                        if Weak::as_ptr(&tile.0) != Rc::as_ptr(w) {
+                            sb.push(format!(
+                                "Window {id} is at ({x}, {y}) but the window here is {:?}",
+                                tile.0.upgrade().map(|w| w.borrow().id)
+                            ));
+                        }
+                    } else {
+                        if !workspace
+                            .borrow()
+                            .floatings
+                            .iter()
+                            .any(|ptr| Weak::as_ptr(&ptr.0) == Rc::as_ptr(&w))
+                        {
+                            sb.push(format!(
+                                "Window {id} is floating but not found in floatings"
+                            ));
+                        }
+                    }
+                }
+            }
+
+            if w_ref.title != window.title {
                 sb.push(format!(
                     "Window {id} title different, local: {:?}, state: {:?}",
-                    w.title, window.title
+                    w_ref.title, window.title
                 ));
             }
             let icon = self.icon_cache.lookup_no_insert(&window.app_id);
-            if w.icon != icon {
+            if w_ref.icon != icon {
                 sb.push(format!(
                     "Window {id} icon different, local: {:?}, state: {:?}",
-                    w.icon, icon
+                    w_ref.icon, icon
                 ));
             }
-            if w.urgent != window.is_urgent {
+            if w_ref.urgent != window.is_urgent {
                 sb.push(format!(
                     "Window {id} urgent different, local: {:?}, state: {:?}",
-                    w.urgent, window.is_urgent
+                    w_ref.urgent, window.is_urgent
                 ));
             }
             if window.is_focused {
@@ -201,6 +246,10 @@ impl Snapshot {
                 "Focused window different, local: {:?}, state: {:?}",
                 self.focused_window_id, focused_window_id
             ));
+        }
+
+        for s in sb {
+            eprintln!(" ==> \x1B[31m{s}\x1B[0m");
         }
     }
 
@@ -238,7 +287,7 @@ impl Snapshot {
                             ws.active = ws_id == *id;
                         }
                     } else {
-                        eprintln!("Operating null workspace in output {:?}", &output_name);
+                        eprintln!("ERROR: Operating null workspace in output {:?}", &output_name);
                     }
                 }
                 if *focused {
@@ -340,9 +389,12 @@ impl Snapshot {
                         let workspace = self.workspaces.entry(workspace_id).or_default();
                         remove_from_old_workspace(&mut workspace.borrow_mut(), &window.borrow());
                     }
+                    if self.focused_window_id == Some(*id) {
+                        self.focused_window_id = None;
+                    }
                     Update::Consume
                 } else {
-                    eprintln!("Can't find window to be closed: {id}");
+                    eprintln!("ERROR: Can't find window to be closed: {id}");
                     Update::Cache
                 }
             }
@@ -356,7 +408,7 @@ impl Snapshot {
                         None => Update::Cache,
                     }
                 } else {
-                    self.focused_workspace_id = *id;
+                    self.focused_window_id = *id;
                     Update::Consume
                 }
             }
@@ -376,17 +428,24 @@ impl Snapshot {
                         Some(window) => window.clone(),
                         None => return Update::Cache,
                     };
+                    if window.borrow().layout == change.1.pos() {
+                        windows.push((None, None));
+                        continue;
+                    }
                     let workspace_id = window.borrow().workspace_id;
                     if let Some(workspace_id) = workspace_id {
                         match self.workspaces.get(&workspace_id) {
-                            Some(workspace) => windows.push((window, Some(workspace.clone()))),
+                            Some(workspace) => windows.push((Some(window), Some(workspace.clone()))),
                             None => return Update::Cache,
                         }
                     } else {
-                        windows.push((window, None));
+                        windows.push((Some(window), None));
                     }
                 }
                 for ((window, workspace), change) in windows.iter().zip(changes) {
+                    let Some(window) = window else {
+                        continue;
+                    };
                     if let Some(workspace) = workspace {
                         remove_from_old_workspace(&mut workspace.borrow_mut(), &window.borrow());
                     }
@@ -448,7 +507,7 @@ fn init_windows(
     let mut focused = None;
     for window in windows {
         if !window.is_floating && window.layout.pos_in_scrolling_layout.is_none() {
-            eprintln!("Found window without pos nor floating {:?}", window.title);
+            eprintln!("ERROR: Found window without pos nor floating {:?}", window.title);
             continue;
         }
         if window.is_focused {
@@ -479,9 +538,7 @@ fn init_outputs(
         let Some(workspace_id) = window.borrow().workspace_id else {
             continue;
         };
-        let (floatings, columns) = workspace_windows
-            .entry(workspace_id)
-            .or_default();
+        let (floatings, columns) = workspace_windows.entry(workspace_id).or_default();
         if let Some((x, y)) = window.borrow().layout {
             if columns.len() <= x {
                 columns.resize(x + 1, Vec::new());
@@ -530,14 +587,14 @@ fn remove_from_old_workspace(workspace: &mut Workspace, window: &Window) {
         let columns = &mut workspace.columns;
         let Some(column) = columns.get_mut(x) else {
             eprintln!(
-                "Window {:?} column {} not found in workspace {}",
+                "ERROR: Window {:?} column {} not found in workspace {}",
                 window.title, x, workspace_id
             );
             return;
         };
         if column.len() <= y {
             eprintln!(
-                "Window {:?} row {} not found in column {}",
+                "ERROR: Window {:?} row {} not found in column {}",
                 window.title, y, x
             );
             return;

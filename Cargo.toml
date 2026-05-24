@@ -3,6 +3,9 @@ name = "niri-snapshot"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+verify = []
+
 [dependencies]
 freedesktop-icons = "0.4"
 gtk = "0.18.1"
