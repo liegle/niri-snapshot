@@ -106,8 +106,8 @@ fn run() -> io::Result<()> {
                 snapshot.print();
                 #[cfg(feature = "verify")]
                 {
+                    eprintln!("\x1B[33m{} caches left\x1B[0m", cache.len());
                     snapshot.verify(&state);
-                    eprintln!(" ==> \x1B[33m{} caches left\x1B[0m", cache.len());
                 }
             }
             Update::Cache => {
