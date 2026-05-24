@@ -1,5 +1,5 @@
 pkgname=niri-snapshot
-pkgver=0.0.1
+pkgver=0.1.0
 pkgrel=1
 pkgdesc="Print niri's current state in json for eww to use "
 url='https://github.com/liegle/niri-snapshot'
