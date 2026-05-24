@@ -1,0 +1,4 @@
+niri-snapshot
+pkg
+src
+*.pkg.tar.zst

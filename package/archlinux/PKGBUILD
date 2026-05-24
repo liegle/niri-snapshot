@@ -1,0 +1,36 @@
+pkgname=niri-snapshot
+pkgver=0.0.1
+pkgrel=1
+pkgdesc="Print niri's current state in json for eww to use "
+url='https://github.com/liegle/niri-snapshot'
+arch=(x86_64)
+license=(MIT)
+makedepends=(cargo git)
+depends=(eww niri)
+provides=(niri-snapshot)
+conflicts=()
+options=(strip !debug)
+source=(
+    "git+$url#branch=master"
+)
+b2sums=('SKIP')
+
+prepare() {
+    cd $pkgname
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --target "$CARCH-unknown-linux-gnu"
+}
+
+build() {
+    cd $pkgname
+    export RUSTFLAGS="--remap-path-prefix=$srcdir=/src"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --frozen --release
+}
+
+package() {
+    cd $pkgname
+    install -vDm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+    install -vDm755 target/release/$pkgname -t "$pkgdir/usr/bin/"
+}
