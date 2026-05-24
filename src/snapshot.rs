@@ -678,20 +678,19 @@ fn remove_from_old_workspace(workspace: &mut Workspace, window: &Window) {
         }
         // There might be multiple removes and adds, and the window here is
         // possibly changed by an add, in which case we don't need to remove it
-        if column[y]
-            .0
-            .upgrade()
-            .is_some_and(|w| w.try_lock().is_ok_and(|w| w.id == window.id))
-        {
+        if column[y].0.upgrade().is_some_and(|w| match w.try_lock() {
+            Ok(w) => w.id == window.id,
+            Err(_) => true,
+        }) {
             column[y] = Ptr(Weak::new());
         }
     } else {
         let floatings = &mut workspace.floatings;
         floatings.iter_mut().for_each(|w| {
-            if w.0
-                .upgrade()
-                .is_some_and(|w| w.try_lock().is_ok_and(|w| w.id == window.id))
-            {
+            if w.0.upgrade().is_some_and(|w| match w.try_lock() {
+                Ok(w) => w.id == window.id,
+                Err(_) => true,
+            }) {
                 *w = Ptr(Weak::new());
             }
         });
