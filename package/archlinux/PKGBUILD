@@ -1,12 +1,12 @@
 pkgname=niri-snapshot
-pkgver=0.2.1
+pkgver=0.2.2
 pkgrel=1
 pkgdesc="Print niri's current state in json for eww to use "
 url='https://github.com/liegle/niri-snapshot'
 arch=(x86_64)
 license=(MIT)
 makedepends=(cargo git)
-depends=(eww niri)
+depends=(glibc libgcc niri)
 provides=(niri-snapshot)
 conflicts=()
 options=(strip !debug)

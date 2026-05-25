@@ -256,7 +256,7 @@ impl Snapshot {
                     w_ref.title, window.title
                 ));
             }
-            let icon = self.icon_cache.lookup_no_insert(&window.app_id);
+            let icon = self.icon_cache.lookup(&window.app_id);
             if w_ref.icon != icon {
                 sb.push(format!(
                     "Window {id} icon different, local: {:?}, state: {:?}",

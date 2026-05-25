@@ -1,77 +1,12 @@
-// copied from niri-taskbar
-// MIT License
-// Copyright (c) 2024 Adam Harvey
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
-
-use std::{collections::HashMap, path::PathBuf, str::FromStr, sync::LazyLock};
-
-use gtk::gio::{
-    DesktopAppInfo,
-    traits::{AppInfoExt as _, IconExt},
+use std::{
+    collections::{HashMap, HashSet},
+    ffi::OsString,
+    fs::DirEntry,
+    path::PathBuf,
+    sync::LazyLock,
 };
 
-pub struct IconCache {
-    map: HashMap<String, String>,
-}
-
-impl IconCache {
-    pub fn new() -> Self {
-        Self {
-            map: HashMap::new(),
-        }
-    }
-
-    pub fn lookup(&mut self, key: &Option<String>) -> Option<String> {
-        let Some(key) = key else {
-            return None;
-        };
-
-        if let Some(path) = self.map.get(key) {
-            return Some(path.clone());
-        }
-
-        if let Some(path) = lookup(key) {
-            self.map.insert(key.clone(), path.clone());
-            return Some(path);
-        }
-
-        None
-    }
-
-    #[cfg(feature = "verify")]
-    pub fn lookup_no_insert(&self, key: &Option<String>) -> Option<String> {
-        let Some(key) = key else {
-            return None;
-        };
-
-        if let Some(path) = self.map.get(key) {
-            return Some(path.clone());
-        }
-
-        if let Some(path) = lookup(key) {
-            return Some(path);
-        }
-
-        None
-    }
-}
+const PREFER_SIZE: i32 = 16;
 
 static XDG_DATA_DIRS: LazyLock<Vec<PathBuf>> = LazyLock::new(|| {
     let mut dirs = Vec::new();
@@ -93,75 +28,144 @@ static XDG_DATA_DIRS: LazyLock<Vec<PathBuf>> = LazyLock::new(|| {
     dirs
 });
 
-fn lookup(key: &str) -> Option<String> {
-    // KDE applications are special, so we'll go hunt for them ourselves. Again, this is loosely
-    // adapted from wlr/taskbar.
+pub struct IconCache {
+    map: HashMap<String, String>,
+}
+
+impl IconCache {
+    pub fn new() -> Self {
+        let known_icons = prepare_icon_names();
+        let sizes = prepare_icon_sizes();
+        let mut map = HashMap::new();
+        for (name, icons) in known_icons {
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let name = name.to_string();
+            'icons: for icon in icons {
+                for size in &sizes {
+                    let mut paths = linicon::lookup_icon(&icon)
+                        .with_size(*size)
+                        .filter_map(Result::ok);
+                    while let Some(path) = paths.next() {
+                        if let Some(path) = path.path.to_str() {
+                            map.insert(name, path.to_string());
+                            map.insert(icon, path.to_string());
+                            break 'icons;
+                        }
+                    }
+                }
+            }
+        }
+        Self { map }
+    }
+
+    pub fn lookup(&self, key: &Option<String>) -> Option<String> {
+        if let Some(key) = key {
+            if let Some(path) = self.map.get(key) {
+                Some(path.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+}
+
+fn prepare_icon_names() -> HashMap<OsString, Vec<String>> {
+    let mut known_icons = HashMap::new();
     for dir in XDG_DATA_DIRS.iter() {
-        for prefix in [
-            "applications/",
-            "applications/kde/",
-            "applications/org.kde.",
-        ] {
-            for suffix in ["", ".desktop"] {
-                let path = dir.join(format!("{prefix}{key}{suffix}"));
-                if let Some(info) = DesktopAppInfo::from_filename(&path) {
-                    if let Some(path) = info.icon_path() {
-                        return Some(path);
+        walk(&dir, &mut |entry| {
+            if !entry.file_type().is_ok_and(|file_type| file_type.is_file()) {
+                return;
+            }
+            let path = entry.path();
+            let Some(name) = path.file_prefix() else {
+                return;
+            };
+            let Some(ext) = path.extension() else {
+                return;
+            };
+            if ext != "desktop" {
+                return;
+            }
+            let entry = freedesktop_entry_parser::parse_entry(&path);
+            let Ok(entry) = entry else {
+                return;
+            };
+            let Some(icons) = entry.get("Desktop Entry", "Icon") else {
+                return;
+            };
+            if icons.is_empty() {
+                return;
+            }
+            known_icons.insert(
+                name.to_owned(),
+                icons.iter().map(String::clone).collect::<Vec<_>>(),
+            );
+        });
+    }
+    known_icons
+}
+
+fn prepare_icon_sizes() -> Vec<u16> {
+    let mut sizes = HashSet::new();
+    for dir in XDG_DATA_DIRS.iter() {
+        let icon_dir = dir.join("icons");
+        if icon_dir.is_dir() && !icon_dir.is_symlink() {
+            let Ok(r) = icon_dir.read_dir() else {
+                continue;
+            };
+            for theme_dir in r.filter_map(Result::ok) {
+                let theme_dir = theme_dir.path();
+                if theme_dir.is_dir() && !theme_dir.is_symlink() {
+                    let Ok(r) = theme_dir.read_dir() else {
+                        continue;
+                    };
+                    for entry in r.filter_map(Result::ok) {
+                        let path = entry.path();
+                        let Some(name) = path.file_name() else {
+                            continue;
+                        };
+                        let Some(name) = name.to_str() else {
+                            continue;
+                        };
+                        let name = name.to_string();
+                        let Some((size, _)) = name.split_once('x') else {
+                            continue;
+                        };
+                        if let Ok(size) = size.parse() {
+                            sizes.insert(size);
+                        }
                     }
                 }
             }
         }
     }
+    let mut sizes = sizes.into_iter().collect::<Vec<_>>();
+    sizes.sort_by(|l, r| {
+        let l = *l as i32;
+        let r = *r as i32;
+        let dl = (l - PREFER_SIZE).abs();
+        let dr = (r - PREFER_SIZE).abs();
+        if dl == dr { r.cmp(&l) } else { dl.cmp(&dr) }
+    });
+    sizes
+}
 
-    // This is _very_ roughly adapted from the wlr/taskbar module built into Waybar. We don't do
-    // the same startup_wm_class check here for now.
-    let infos = DesktopAppInfo::search(key);
-    for possible in infos.into_iter().flatten() {
-        if let Some(info) = DesktopAppInfo::new(&possible) {
-            if let Some(path) = info.icon_path() {
-                return Some(path);
+fn walk<F: FnMut(&DirEntry)>(dir: &PathBuf, cb: &mut F) {
+    if dir.is_dir() && !dir.is_symlink() {
+        let Ok(r) = dir.read_dir() else {
+            return;
+        };
+        for entry in r.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() && !path.is_symlink() {
+                walk(&path, cb);
+            } else {
+                cb(&entry);
             }
         }
-    }
-
-    None
-}
-
-fn lookup_icon(key: &str) -> Option<String> {
-    if let Some(path) = freedesktop_icons::lookup(key).with_size(16).find() {
-        return convert(path);
-    }
-
-    if let Some(path) = linicon::lookup_icon(key)
-        .with_size(16)
-        .filter_map(|result| result.ok())
-        .next()
-    {
-        return convert(path.path);
-    }
-
-    None
-}
-
-fn convert(path: PathBuf) -> Option<String> {
-    if let Some(path) = path.to_str() {
-        match String::from_str(path) {
-            Ok(path) => return Some(path),
-            _ => (),
-        }
-    }
-    eprint!("Can't convert path into string");
-    return None;
-}
-
-trait DesktopAppInfoExt {
-    fn icon_path(&self) -> Option<String>;
-}
-
-impl DesktopAppInfoExt for DesktopAppInfo {
-    fn icon_path(&self) -> Option<String> {
-        self.icon()
-            .and_then(|icon| IconExt::to_string(&icon))
-            .and_then(|name| lookup_icon(&name))
     }
 }
