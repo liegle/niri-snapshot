@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    ffi::OsString,
     fs::DirEntry,
     path::PathBuf,
     sync::LazyLock,
@@ -29,53 +28,59 @@ static XDG_DATA_DIRS: LazyLock<Vec<PathBuf>> = LazyLock::new(|| {
 });
 
 pub struct IconCache {
+    known_icons: HashMap<String, Vec<String>>,
+    known_sizes: Vec<u16>,
     map: HashMap<String, String>,
 }
 
 impl IconCache {
     pub fn new() -> Self {
         let known_icons = prepare_icon_names();
-        let sizes = prepare_icon_sizes();
-        let mut map = HashMap::new();
-        for (name, icons) in known_icons {
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            let name = name.to_string();
-            'icons: for icon in icons {
-                for size in &sizes {
-                    let mut paths = linicon::lookup_icon(&icon)
-                        .with_size(*size)
-                        .filter_map(Result::ok);
-                    while let Some(path) = paths.next() {
-                        if let Some(path) = path.path.to_str() {
-                            map.insert(name, path.to_string());
-                            map.insert(icon, path.to_string());
-                            break 'icons;
-                        }
+        let known_sizes = prepare_icon_sizes();
+        Self {
+            known_icons,
+            known_sizes,
+            map: HashMap::new(),
+        }
+    }
+
+    pub fn lookup(&mut self, key: &Option<String>) -> Option<String> {
+        let Some(key) = key else {
+            return None;
+        };
+        let mut key = key.to_ascii_lowercase();
+        key.retain(|c| !c.is_ascii() || c.is_ascii_alphabetic());
+        if let Some(path) = self.map.get(&key) {
+            return Some(path.clone());
+        }
+        let Some(icons) = self.known_icons.get(&key) else {
+            return None;
+        };
+        for icon in icons {
+            for size in &self.known_sizes {
+                let mut paths = linicon::lookup_icon(&icon)
+                    .with_size(*size)
+                    .filter_map(Result::ok);
+                while let Some(path) = paths.next() {
+                    if let Some(path) = path.path.to_str() {
+                        let path = path.to_string();
+                        self.map.insert(key.to_string(), path.clone());
+                        return Some(path);
                     }
                 }
             }
         }
-        Self { map }
-    }
-
-    pub fn lookup(&self, key: &Option<String>) -> Option<String> {
-        if let Some(key) = key {
-            if let Some(path) = self.map.get(key) {
-                Some(path.clone())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+        None
     }
 }
 
-fn prepare_icon_names() -> HashMap<OsString, Vec<String>> {
+fn prepare_icon_names() -> HashMap<String, Vec<String>> {
     let mut known_icons = HashMap::new();
     for dir in XDG_DATA_DIRS.iter() {
+        let dir = dir.join("applications");
+        if !dir.is_dir() || dir.is_symlink() {
+            continue;
+        }
         walk(&dir, &mut |entry| {
             if !entry.file_type().is_ok_and(|file_type| file_type.is_file()) {
                 return;
@@ -100,6 +105,10 @@ fn prepare_icon_names() -> HashMap<OsString, Vec<String>> {
             if icons.is_empty() {
                 return;
             }
+            let Ok(mut name) = name.to_ascii_lowercase().into_string() else {
+                return;
+            };
+            name.retain(|c| !c.is_ascii() || c.is_ascii_alphabetic());
             known_icons.insert(
                 name.to_owned(),
                 icons.iter().map(String::clone).collect::<Vec<_>>(),
