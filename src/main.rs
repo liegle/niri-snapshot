@@ -83,7 +83,7 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-const THROTTLE_DURATION: Duration = Duration::from_millis(100);
+const THROTTLE_DURATION: Duration = Duration::from_millis(3);
 
 fn update_loop(
     socket: niri_ipc::socket::Socket,
