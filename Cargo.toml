@@ -4,7 +4,6 @@ version = "0.2.4"
 edition = "2024"
 
 [features]
-default = ["verify"]
 verify = []
 
 [dependencies]

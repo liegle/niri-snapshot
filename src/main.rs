@@ -37,11 +37,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::wrapper::{Snapshot, Update};
+use crate::snapshot::{Snapshot, Update};
 
 mod icon;
+mod state;
 mod snapshot;
-mod wrapper;
 
 fn main() -> io::Result<()> {
     let args = env::args().collect::<Vec<String>>();
@@ -119,7 +119,7 @@ fn update_loop(socket: niri_ipc::socket::Socket, tx: Sender<Instant>, mut snapsh
                 #[cfg(feature = "verify")]
                 {
                     eprintln!("\x1B[33m{} caches left\x1B[0m", cache.len());
-                    snapshot.lock_verify(&state);
+                    state.lock_verify(&state);
                 }
             }
             Update::Cache => {
