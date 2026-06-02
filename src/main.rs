@@ -32,18 +32,16 @@
 use std::{
     env,
     io::{self, Error, ErrorKind},
-    sync::{
-        Arc, Mutex,
-        mpsc::{self, Receiver, Sender},
-    },
+    sync::mpsc::{self, Receiver, Sender},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
-use crate::snapshot::Snapshot;
+use crate::wrapper::{Snapshot, Update};
 
 mod icon;
 mod snapshot;
+mod wrapper;
 
 fn main() -> io::Result<()> {
     let args = env::args().collect::<Vec<String>>();
@@ -74,10 +72,10 @@ fn main() -> io::Result<()> {
             "Failed to connect to event stream",
         ));
     };
-    let snapshot = Arc::new(Mutex::new(Snapshot::new(workspaces, windows)));
-    snapshot.lock().unwrap().print();
+    let snapshot = Snapshot::new(workspaces, windows);
+    snapshot.lock_print();
     let (tx, rx) = mpsc::channel();
-    let handle = print_loop(rx, Arc::clone(&snapshot));
+    let handle = print_loop(rx, snapshot.clone());
     update_loop(socket, tx, snapshot);
     handle.join().unwrap();
     Ok(())
@@ -85,11 +83,7 @@ fn main() -> io::Result<()> {
 
 const THROTTLE_DURATION: Duration = Duration::from_millis(3);
 
-fn update_loop(
-    socket: niri_ipc::socket::Socket,
-    tx: Sender<Instant>,
-    snapshot: Arc<Mutex<Snapshot>>,
-) {
+fn update_loop(socket: niri_ipc::socket::Socket, tx: Sender<Instant>, mut snapshot: Snapshot) {
     #[cfg(feature = "verify")]
     let mut state = niri_ipc::state::EventStreamState::default();
     let mut cache = Vec::new();
@@ -107,13 +101,13 @@ fn update_loop(
             counter += 1;
             continue;
         }
-        let consume = { snapshot.lock().unwrap().update(&evt) };
-        match consume {
+        let update = { snapshot.lock_update(&evt) };
+        match update {
             Update::Consume => {
                 let mut used = true;
                 while used {
                     used = false;
-                    cache.retain_mut(|evt| match snapshot.lock().unwrap().update(&evt) {
+                    cache.retain_mut(|evt| match snapshot.lock_update(&evt) {
                         Update::Consume | Update::Ignore => {
                             used = true;
                             false
@@ -125,7 +119,7 @@ fn update_loop(
                 #[cfg(feature = "verify")]
                 {
                     eprintln!("\x1B[33m{} caches left\x1B[0m", cache.len());
-                    snapshot.lock().unwrap().verify(&state);
+                    snapshot.lock_verify(&state);
                 }
             }
             Update::Cache => {
@@ -136,7 +130,7 @@ fn update_loop(
     }
 }
 
-fn print_loop(rx: Receiver<Instant>, snapshot: Arc<Mutex<Snapshot>>) -> JoinHandle<()> {
+fn print_loop(rx: Receiver<Instant>, snapshot: Snapshot) -> JoinHandle<()> {
     thread::spawn(move || {
         while let Ok(mut time) = rx.recv() {
             let mut now = Instant::now();
@@ -147,16 +141,7 @@ fn print_loop(rx: Receiver<Instant>, snapshot: Arc<Mutex<Snapshot>>) -> JoinHand
                 }
                 now = Instant::now();
             }
-            {
-                let snapshot = snapshot.lock().unwrap();
-                snapshot.print();
-            }
+            snapshot.lock_print();
         }
     })
-}
-
-enum Update {
-    Consume,
-    Ignore,
-    Cache,
 }

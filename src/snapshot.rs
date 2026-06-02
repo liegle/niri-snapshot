@@ -1,14 +1,14 @@
 use std::{
+    cell::RefCell,
     collections::HashMap,
     convert::identity,
-    io::{self, Write},
-    sync::{Arc, Mutex, Weak},
+    rc::{Rc, Weak},
 };
 
-use crate::{Update, icon::IconCache};
+use crate::{icon::IconCache, wrapper::Update};
 
 #[derive(serde::Serialize)]
-pub struct Snapshot {
+pub struct State {
     outputs: HashMap<Option<String>, Vec<Ptr<Workspace>>>,
     #[serde(serialize_with = "crate::snapshot::serialize_option_u64")]
     focused_workspace_id: Option<u64>,
@@ -17,9 +17,9 @@ pub struct Snapshot {
 
     // not serialize fields
     #[serde(skip)]
-    workspaces: HashMap<u64, Arc<Mutex<Workspace>>>,
+    workspaces: HashMap<u64, Rc<RefCell<Workspace>>>,
     #[serde(skip)]
-    windows: HashMap<u64, Arc<Mutex<Window>>>,
+    windows: HashMap<u64, Rc<RefCell<Window>>>,
     #[serde(skip)]
     icon_cache: IconCache,
 }
@@ -60,7 +60,7 @@ struct Window {
 }
 
 #[derive(Clone, Debug)]
-struct Ptr<T>(Weak<Mutex<T>>);
+struct Ptr<T>(Weak<RefCell<T>>);
 
 impl<T: serde::Serialize> serde::Serialize for Ptr<T> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -68,7 +68,7 @@ impl<T: serde::Serialize> serde::Serialize for Ptr<T> {
         S: serde::Serializer,
     {
         match self.0.upgrade() {
-            Some(c) => c.lock().unwrap().serialize(serializer),
+            Some(c) => c.borrow().serialize(serializer),
             None => serializer.serialize_none(),
         }
     }
@@ -94,7 +94,7 @@ fn serialize_option_string<S: serde::Serializer>(
     }
 }
 
-impl Snapshot {
+impl State {
     pub fn new(workspaces: Vec<niri_ipc::Workspace>, windows: Vec<niri_ipc::Window>) -> Self {
         let (workspaces, focused_workspace_id) = init_workspaces(&workspaces);
         let mut icon_cache = IconCache::new();
@@ -109,14 +109,6 @@ impl Snapshot {
             windows,
             icon_cache,
         }
-    }
-
-    pub fn print(&self) {
-        let stdout = io::stdout().lock();
-        serde_json::to_writer(stdout, &self).unwrap();
-        let mut stdout = io::stdout().lock();
-        stdout.write(&[b'\n']).unwrap();
-        stdout.flush().unwrap();
     }
 
     #[cfg(feature = "verify")]
@@ -137,7 +129,7 @@ impl Snapshot {
                 sb.push(format!("Workspace not found in local: {id}"));
                 continue;
             };
-            let ws_ref = ws.lock().unwrap();
+            let ws_ref = ws.borrow();
             if ws_ref.id != *id {
                 sb.push(format!(
                     "Workspace id wrong, key: {id}, stored: {}",
@@ -193,7 +185,7 @@ impl Snapshot {
                 sb.push(format!("Window not found in local: {id}"));
                 continue;
             };
-            let w_ref = w.lock().unwrap();
+            let w_ref = w.borrow();
             if w_ref.id != *id {
                 sb.push(format!("Window id wrong, key: {id}, stored: {}", w_ref.id));
             }
@@ -215,7 +207,7 @@ impl Snapshot {
                             w_ref.layout, layout
                         ));
                     } else if let Some((x, y)) = layout {
-                        let workspace = workspace.lock().unwrap();
+                        let workspace = workspace.borrow();
                         let Some(column) = workspace.columns.get(x) else {
                             sb.push(format!(
                                 "Window {id} is at ({x}, {y}) but this column is not found"
@@ -228,19 +220,18 @@ impl Snapshot {
                             ));
                             break 'ws;
                         };
-                        if Weak::as_ptr(&tile.0) != Arc::as_ptr(w) {
+                        if Weak::as_ptr(&tile.0) != Rc::as_ptr(w) {
                             sb.push(format!(
                                 "Window {id} is at ({x}, {y}) but the window here is {:?}",
-                                tile.0.upgrade().map(|w| w.lock().unwrap().id)
+                                tile.0.upgrade().map(|w| w.borrow().id)
                             ));
                         }
                     } else {
                         if !workspace
-                            .lock()
-                            .unwrap()
+                            .borrow()
                             .floatings
                             .iter()
-                            .any(|ptr| Weak::as_ptr(&ptr.0) == Arc::as_ptr(&w))
+                            .any(|ptr| Weak::as_ptr(&ptr.0) == Rc::as_ptr(&w))
                         {
                             sb.push(format!(
                                 "Window {id} is floating but not found in floatings"
@@ -297,7 +288,7 @@ impl Snapshot {
             niri_ipc::Event::WorkspaceUrgencyChanged { id, urgent } => {
                 match self.workspaces.get_mut(&id) {
                     Some(workspace) => {
-                        workspace.lock().unwrap().urgent = *urgent;
+                        workspace.borrow_mut().urgent = *urgent;
                         Update::Consume
                     }
                     None => Update::Cache,
@@ -307,17 +298,15 @@ impl Snapshot {
                 let Some(workspace) = self.workspaces.get(&id) else {
                     return Update::Cache;
                 };
-                workspace.lock().unwrap().active = true;
-                let output_name = &workspace.lock().unwrap().output;
-                let Some(output) = self.outputs.get_mut(output_name) else {
+                workspace.borrow_mut().active = true;
+                let output_name = workspace.borrow().output.clone();
+                let Some(output) = self.outputs.get_mut(&output_name) else {
                     return Update::Cache;
                 };
                 for ws in output {
                     if let Some(ws) = ws.0.upgrade() {
-                        if let Ok(ws) = &mut ws.try_lock() {
-                            let ws_id = ws.id;
-                            ws.active = ws_id == *id;
-                        }
+                        let ws_id = ws.borrow().id;
+                        ws.borrow_mut().active = ws_id == *id;
                     } else {
                         eprintln!(
                             "ERROR: Operating null workspace in output {:?}",
@@ -338,13 +327,13 @@ impl Snapshot {
                     if let Some(id) = active_window_id {
                         match self.windows.get(&id) {
                             Some(_) => {
-                                workspace.lock().unwrap().active_window_id = *active_window_id;
+                                workspace.borrow_mut().active_window_id = *active_window_id;
                                 Update::Consume
                             }
                             None => Update::Cache,
                         }
                     } else {
-                        workspace.lock().unwrap().active_window_id = *active_window_id;
+                        workspace.borrow_mut().active_window_id = *active_window_id;
                         Update::Consume
                     }
                 }
@@ -359,7 +348,7 @@ impl Snapshot {
                     // Changed
                     // only for workspace_id / is_floating / title / app_id
                     // Or opened but was sent in wrong order
-                    let found_window_ref = found_window.lock().unwrap();
+                    let found_window_ref = found_window.borrow();
                     let old_workspace_id = found_window_ref.workspace_id;
                     let workspace_changed = old_workspace_id != window.workspace_id;
                     let old_layout = found_window_ref.layout;
@@ -383,22 +372,23 @@ impl Snapshot {
                         }
 
                         if let Some(workspace_id) = old_workspace_id {
-                            remove_from_workspace(
-                                &mut self.workspaces.get_mut(&workspace_id).unwrap(/*Already check above*/).lock().unwrap(),
-                                old_layout,
-                                window.id,
-                            );
+                            self.workspaces
+                                .get_mut(&workspace_id)
+                                .unwrap(/*Already check above*/)
+                                .borrow_mut()
+                                .remove(old_layout, window.id);
                         }
-                        found_window.lock().unwrap().layout = window.layout.pos();
+                        found_window.borrow_mut().layout = window.layout.pos();
                         if let Some(workspace_id) = window.workspace_id {
-                            add_to_workspace(
-                                &mut self.workspaces.get_mut(&workspace_id).unwrap(/*Already check above*/).lock().unwrap(),
-                                &found_window,
-                            );
+                            self.workspaces
+                                .get_mut(&workspace_id)
+                                .unwrap(/*Already check above*/)
+                                .borrow_mut()
+                                .add(&found_window);
                         }
                     }
                     if title_changed || app_id_changed {
-                        let mut found_window_ref = found_window.lock().unwrap();
+                        let mut found_window_ref = found_window.borrow_mut();
                         found_window_ref.title = window.title.clone();
                         found_window_ref.icon = self.icon_cache.lookup(&window.app_id);
                         found_window_ref.app_id = window.app_id.clone();
@@ -410,7 +400,7 @@ impl Snapshot {
                             return Update::Cache;
                         }
                     }
-                    let window_ptr = Arc::new(Mutex::new(Window {
+                    let window_ptr = Rc::new(RefCell::new(Window {
                         id: window.id,
                         title: window.title.clone(),
                         urgent: window.is_urgent,
@@ -421,10 +411,11 @@ impl Snapshot {
                     }));
                     self.windows.insert(window.id, window_ptr.clone());
                     if let Some(workspace_id) = window.workspace_id {
-                        add_to_workspace(
-                            &mut self.workspaces.get_mut(&workspace_id).unwrap(/*Already check above*/).lock().unwrap(),
-                            &window_ptr,
-                        );
+                        self.workspaces
+                            .get_mut(&workspace_id)
+                            .unwrap(/*Already check above*/)
+                            .borrow_mut()
+                            .add(&window_ptr);
                     }
                 };
                 if window.is_focused {
@@ -434,11 +425,11 @@ impl Snapshot {
             }
             niri_ipc::Event::WindowClosed { id } => {
                 if let Some(window) = self.windows.remove(&id) {
-                    let workspace_id = window.lock().unwrap().workspace_id;
-                    let layout = window.lock().unwrap().layout;
+                    let workspace_id = window.borrow().workspace_id;
+                    let layout = window.borrow().layout;
                     if let Some(workspace_id) = workspace_id {
                         let workspace = self.workspaces.entry(workspace_id).or_default();
-                        remove_from_workspace(&mut workspace.lock().unwrap(), layout, *id);
+                        workspace.borrow_mut().remove(layout, *id);
                     }
                     if self.focused_window_id == Some(*id) {
                         self.focused_window_id = None;
@@ -466,7 +457,7 @@ impl Snapshot {
             niri_ipc::Event::WindowUrgencyChanged { id, urgent } => {
                 match self.windows.get_mut(&id) {
                     Some(window) => {
-                        window.lock().unwrap().urgent = *urgent;
+                        window.borrow_mut().urgent = *urgent;
                         Update::Consume
                     }
                     None => Update::Cache,
@@ -479,11 +470,11 @@ impl Snapshot {
                         Some(window) => window.clone(),
                         None => return Update::Cache,
                     };
-                    if window.lock().unwrap().layout == change.1.pos() {
+                    if window.borrow().layout == change.1.pos() {
                         windows.push((None, None));
                         continue;
                     }
-                    let workspace_id = window.lock().unwrap().workspace_id;
+                    let workspace_id = window.borrow().workspace_id;
                     if let Some(workspace_id) = workspace_id {
                         match self.workspaces.get(&workspace_id) {
                             Some(workspace) => {
@@ -500,13 +491,13 @@ impl Snapshot {
                         continue;
                     };
                     if let Some(workspace) = workspace {
-                        let layout = window.lock().unwrap().layout;
-                        let id = window.lock().unwrap().id;
-                        remove_from_workspace(&mut workspace.lock().unwrap(), layout, id);
+                        let layout = window.borrow().layout;
+                        let id = window.borrow().id;
+                        workspace.borrow_mut().remove(layout, id);
                     }
-                    window.lock().unwrap().layout = change.1.pos();
+                    window.borrow_mut().layout = change.1.pos();
                     if let Some(workspace) = workspace {
-                        add_to_workspace(&mut workspace.lock().unwrap(), window);
+                        workspace.borrow_mut().add(window);
                     }
                 }
                 Update::Consume
@@ -514,7 +505,7 @@ impl Snapshot {
             _ => Update::Ignore,
         };
         for workspace in self.workspaces.values_mut() {
-            let mut workspace = workspace.lock().unwrap();
+            let mut workspace = workspace.borrow_mut();
             workspace
                 .columns
                 .iter_mut()
@@ -523,6 +514,62 @@ impl Snapshot {
             workspace.floatings.retain(|w| w.0.strong_count() != 0);
         }
         result
+    }
+}
+
+impl Workspace {
+    /// Mark a window removed from a workspace at its layout with [`index_mut`]
+    /// Assumes all windows in the same column of the layout are not borrowed in current thread
+    ///
+    /// [`index_mut`]: std::ops::IndexMut::index_mut
+    fn remove(&mut self, layout: Option<(usize, usize)>, id: u64) {
+        if let Some((x, y)) = layout {
+            let workspace_id = self.id;
+            let columns = &mut self.columns;
+            let Some(column) = columns.get_mut(x) else {
+                eprintln!(
+                    "ERROR: Window {} at column {} but is not found in workspace {}",
+                    id, x, workspace_id
+                );
+                return;
+            };
+            if column.len() <= y {
+                eprintln!(
+                    "ERROR: Window {} at row {} but is not found in column {}",
+                    id, y, x
+                );
+                return;
+            }
+            if column[y].0.upgrade().is_some_and(|w| w.borrow().id == id) {
+                column[y] = Ptr(Weak::new());
+            }
+        } else {
+            let floatings = &mut self.floatings;
+            floatings.retain(|w| w.0.upgrade().is_some_and(|w| w.borrow().id == id));
+        }
+    }
+
+    /// Add a window to a workspace at a new layout with [`resize`] and [`index_mut`]
+    /// Assumes this window is not borrowed in current thread
+    ///
+    /// [`resize`]: Vec::resize
+    /// [`index_mut`]: std::ops::IndexMut::index_mut
+    fn add(&mut self, window: &Rc<RefCell<Window>>) {
+        window.borrow_mut().workspace_id = Some(self.id);
+        if let Some((x, y)) = window.borrow().layout {
+            let columns = &mut self.columns;
+            if columns.len() <= x {
+                columns.resize(x + 1, Vec::new());
+            }
+            let column = &mut columns[x];
+            if column.len() <= y {
+                column.resize(y + 1, Ptr(Weak::new()));
+            }
+            column[y] = Ptr(Rc::downgrade(&window));
+        } else {
+            let floatings = &mut self.floatings;
+            floatings.push(Ptr(Rc::downgrade(&window)));
+        }
     }
 }
 
@@ -539,7 +586,7 @@ impl LayoutExt for niri_ipc::WindowLayout {
 /// Create workspace map from workspace vec sent by niri
 fn init_workspaces(
     workspaces: &Vec<niri_ipc::Workspace>,
-) -> (HashMap<u64, Arc<Mutex<Workspace>>>, Option<u64>) {
+) -> (HashMap<u64, Rc<RefCell<Workspace>>>, Option<u64>) {
     let mut result = HashMap::new();
     let mut focused = None;
     for workspace in workspaces {
@@ -548,7 +595,7 @@ fn init_workspaces(
         }
         result.insert(
             workspace.id,
-            Arc::new(Mutex::new(Workspace {
+            Rc::new(RefCell::new(Workspace {
                 id: workspace.id,
                 active: workspace.is_active,
                 urgent: workspace.is_urgent,
@@ -567,7 +614,7 @@ fn init_workspaces(
 fn init_windows(
     windows: &Vec<niri_ipc::Window>,
     icon_cache: &mut IconCache,
-) -> (HashMap<u64, Arc<Mutex<Window>>>, Option<u64>) {
+) -> (HashMap<u64, Rc<RefCell<Window>>>, Option<u64>) {
     let mut result = HashMap::new();
     let mut focused = None;
     for window in windows {
@@ -583,7 +630,7 @@ fn init_windows(
         }
         result.insert(
             window.id,
-            Arc::new(Mutex::new(Window {
+            Rc::new(RefCell::new(Window {
                 id: window.id,
                 title: window.title.clone(),
                 urgent: window.is_urgent,
@@ -599,16 +646,16 @@ fn init_windows(
 
 /// Create outputs map from workspaces and windows map created or stored
 fn init_outputs(
-    workspaces: &HashMap<u64, Arc<Mutex<Workspace>>>,
-    windows: &HashMap<u64, Arc<Mutex<Window>>>,
+    workspaces: &HashMap<u64, Rc<RefCell<Workspace>>>,
+    windows: &HashMap<u64, Rc<RefCell<Window>>>,
 ) -> HashMap<Option<String>, Vec<Ptr<Workspace>>> {
     let mut workspace_windows = HashMap::<_, (Vec<_>, Vec<Vec<_>>)>::new();
     for window in windows.values() {
-        let Some(workspace_id) = window.lock().unwrap().workspace_id else {
+        let Some(workspace_id) = window.borrow().workspace_id else {
             continue;
         };
         let (floatings, columns) = workspace_windows.entry(workspace_id).or_default();
-        if let Some((x, y)) = window.lock().unwrap().layout {
+        if let Some((x, y)) = window.borrow().layout {
             if columns.len() <= x {
                 columns.resize(x + 1, Vec::new());
             }
@@ -616,20 +663,20 @@ fn init_outputs(
             if column.len() <= y {
                 column.resize(y + 1, None);
             }
-            column[y] = Some(Ptr(Arc::downgrade(&window)));
+            column[y] = Some(Ptr(Rc::downgrade(&window)));
         } else {
-            floatings.push(Some(Ptr(Arc::downgrade(&window))));
+            floatings.push(Some(Ptr(Rc::downgrade(&window))));
         }
     }
 
     let mut outputs = HashMap::<_, Vec<Ptr<Workspace>>>::new();
     for (id, workspace) in workspaces.iter() {
         outputs
-            .entry(workspace.lock().unwrap().output.clone())
+            .entry(workspace.borrow().output.clone())
             .or_default()
-            .push(Ptr(Arc::downgrade(&workspace)));
+            .push(Ptr(Rc::downgrade(&workspace)));
         if let Some((floatings, columns)) = workspace_windows.remove(id) {
-            let mut workspace = workspace.lock().unwrap();
+            let mut workspace = workspace.borrow_mut();
             workspace.columns = columns
                 .into_iter()
                 .map(|v| v.into_iter().filter_map(identity).collect())
@@ -640,67 +687,9 @@ fn init_outputs(
 
     for output in outputs.values_mut() {
         output.sort_by_key(|workspace| match workspace.0.upgrade() {
-            Some(workspace) => workspace.lock().unwrap().idx,
+            Some(workspace) => workspace.borrow().idx,
             None => u8::MAX,
         });
     }
     outputs
-}
-
-/// Mark a window removed from a workspace at its layout with [`index_mut`]
-/// Assumes all windows in the same column of the layout are not borrowed in current thread
-/// 
-/// [`index_mut`]: std::ops::IndexMut::index_mut
-fn remove_from_workspace(workspace: &mut Workspace, layout: Option<(usize, usize)>, id: u64) {
-    if let Some((x, y)) = layout {
-        let workspace_id = workspace.id;
-        let columns = &mut workspace.columns;
-        let Some(column) = columns.get_mut(x) else {
-            eprintln!(
-                "ERROR: Window {} at column {} but is not found in workspace {}",
-                id, x, workspace_id
-            );
-            return;
-        };
-        if column.len() <= y {
-            eprintln!(
-                "ERROR: Window {} at row {} but is not found in column {}",
-                id, y, x
-            );
-            return;
-        }
-        if column[y]
-            .0
-            .upgrade()
-            .is_some_and(|w| w.lock().unwrap().id == id)
-        {
-            column[y] = Ptr(Weak::new());
-        }
-    } else {
-        let floatings = &mut workspace.floatings;
-        floatings.retain(|w| w.0.upgrade().is_some_and(|w| w.lock().unwrap().id == id));
-    }
-}
-
-/// Add a window to a workspace at a new layout with [`resize`] and [`index_mut`]
-/// Assumes this window is not borrowed in current thread
-///
-/// [`resize`]: Vec::resize
-/// [`index_mut`]: std::ops::IndexMut::index_mut
-fn add_to_workspace(workspace: &mut Workspace, window: &Arc<Mutex<Window>>) {
-    window.lock().unwrap().workspace_id = Some(workspace.id);
-    if let Some((x, y)) = window.lock().unwrap().layout {
-        let columns = &mut workspace.columns;
-        if columns.len() <= x {
-            columns.resize(x + 1, Vec::new());
-        }
-        let column = &mut columns[x];
-        if column.len() <= y {
-            column.resize(y + 1, Ptr(Weak::new()));
-        }
-        column[y] = Ptr(Arc::downgrade(&window));
-    } else {
-        let floatings = &mut workspace.floatings;
-        floatings.push(Ptr(Arc::downgrade(&window)));
-    }
 }
