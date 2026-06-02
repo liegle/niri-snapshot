@@ -40,6 +40,7 @@ use std::{
 use crate::snapshot::{Snapshot, Update};
 
 mod icon;
+mod layout;
 mod state;
 mod snapshot;
 
@@ -119,7 +120,7 @@ fn update_loop(socket: niri_ipc::socket::Socket, tx: Sender<Instant>, mut snapsh
                 #[cfg(feature = "verify")]
                 {
                     eprintln!("\x1B[33m{} caches left\x1B[0m", cache.len());
-                    state.lock_verify(&state);
+                    snapshot.lock_verify(&state);
                 }
             }
             Update::Cache => {
