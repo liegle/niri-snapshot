@@ -362,7 +362,8 @@ impl Snapshot {
                     let found_window_ref = found_window.lock().unwrap();
                     let old_workspace_id = found_window_ref.workspace_id;
                     let workspace_changed = old_workspace_id != window.workspace_id;
-                    let layout_changed = found_window_ref.layout != window.layout.pos();
+                    let old_layout = found_window_ref.layout;
+                    let layout_changed = old_layout != window.layout.pos();
                     let app_id_changed = found_window_ref.app_id != window.app_id;
                     let title_changed = found_window_ref.title != window.title;
                     drop(found_window_ref);
@@ -382,15 +383,16 @@ impl Snapshot {
                         }
 
                         if let Some(workspace_id) = old_workspace_id {
-                            remove_from_old_workspace(
-                                &mut self.workspaces.get_mut(&workspace_id).unwrap(/*Already check up*/).lock().unwrap(),
-                                &found_window.lock().unwrap(),
+                            remove_from_workspace(
+                                &mut self.workspaces.get_mut(&workspace_id).unwrap(/*Already check above*/).lock().unwrap(),
+                                old_layout,
+                                window.id,
                             );
                         }
                         found_window.lock().unwrap().layout = window.layout.pos();
                         if let Some(workspace_id) = window.workspace_id {
                             add_to_workspace(
-                                &mut self.workspaces.get_mut(&workspace_id).unwrap(/*Already check up*/).lock().unwrap(),
+                                &mut self.workspaces.get_mut(&workspace_id).unwrap(/*Already check above*/).lock().unwrap(),
                                 &found_window,
                             );
                         }
@@ -420,7 +422,7 @@ impl Snapshot {
                     self.windows.insert(window.id, window_ptr.clone());
                     if let Some(workspace_id) = window.workspace_id {
                         add_to_workspace(
-                            &mut self.workspaces.get_mut(&workspace_id).unwrap(/*Already check up*/).lock().unwrap(),
+                            &mut self.workspaces.get_mut(&workspace_id).unwrap(/*Already check above*/).lock().unwrap(),
                             &window_ptr,
                         );
                     }
@@ -433,12 +435,10 @@ impl Snapshot {
             niri_ipc::Event::WindowClosed { id } => {
                 if let Some(window) = self.windows.remove(&id) {
                     let workspace_id = window.lock().unwrap().workspace_id;
+                    let layout = window.lock().unwrap().layout;
                     if let Some(workspace_id) = workspace_id {
                         let workspace = self.workspaces.entry(workspace_id).or_default();
-                        remove_from_old_workspace(
-                            &mut workspace.lock().unwrap(),
-                            &window.lock().unwrap(),
-                        );
+                        remove_from_workspace(&mut workspace.lock().unwrap(), layout, *id);
                     }
                     if self.focused_window_id == Some(*id) {
                         self.focused_window_id = None;
@@ -500,10 +500,9 @@ impl Snapshot {
                         continue;
                     };
                     if let Some(workspace) = workspace {
-                        remove_from_old_workspace(
-                            &mut workspace.lock().unwrap(),
-                            &window.lock().unwrap(),
-                        );
+                        let layout = window.lock().unwrap().layout;
+                        let id = window.lock().unwrap().id;
+                        remove_from_workspace(&mut workspace.lock().unwrap(), layout, id);
                     }
                     window.lock().unwrap().layout = change.1.pos();
                     if let Some(workspace) = workspace {
@@ -648,49 +647,43 @@ fn init_outputs(
     outputs
 }
 
-/// Mark a window removed from a workspace at its layout
-///
-/// [`remove`]: Vec::remove
-fn remove_from_old_workspace(workspace: &mut Workspace, window: &Window) {
-    if let Some((x, y)) = window.layout {
+/// Mark a window removed from a workspace at its layout with [`index_mut`]
+/// Assumes all windows in the same column of the layout are not borrowed in current thread
+/// 
+/// [`index_mut`]: std::ops::IndexMut::index_mut
+fn remove_from_workspace(workspace: &mut Workspace, layout: Option<(usize, usize)>, id: u64) {
+    if let Some((x, y)) = layout {
         let workspace_id = workspace.id;
         let columns = &mut workspace.columns;
         let Some(column) = columns.get_mut(x) else {
             eprintln!(
-                "ERROR: Window {:?} column {} not found in workspace {}",
-                window.title, x, workspace_id
+                "ERROR: Window {} at column {} but is not found in workspace {}",
+                id, x, workspace_id
             );
             return;
         };
         if column.len() <= y {
             eprintln!(
-                "ERROR: Window {:?} row {} not found in column {}",
-                window.title, y, x
+                "ERROR: Window {} at row {} but is not found in column {}",
+                id, y, x
             );
             return;
         }
-        // There might be multiple removes and adds, and the window here is
-        // possibly changed by an add, in which case we don't need to remove it
-        if column[y].0.upgrade().is_some_and(|w| match w.try_lock() {
-            Ok(w) => w.id == window.id,
-            Err(_) => true,
-        }) {
+        if column[y]
+            .0
+            .upgrade()
+            .is_some_and(|w| w.lock().unwrap().id == id)
+        {
             column[y] = Ptr(Weak::new());
         }
     } else {
         let floatings = &mut workspace.floatings;
-        floatings.iter_mut().for_each(|w| {
-            if w.0.upgrade().is_some_and(|w| match w.try_lock() {
-                Ok(w) => w.id == window.id,
-                Err(_) => true,
-            }) {
-                *w = Ptr(Weak::new());
-            }
-        });
+        floatings.retain(|w| w.0.upgrade().is_some_and(|w| w.lock().unwrap().id == id));
     }
 }
 
 /// Add a window to a workspace at a new layout with [`resize`] and [`index_mut`]
+/// Assumes this window is not borrowed in current thread
 ///
 /// [`resize`]: Vec::resize
 /// [`index_mut`]: std::ops::IndexMut::index_mut
