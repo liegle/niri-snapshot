@@ -40,7 +40,7 @@ use std::{
 use crate::snapshot::{Snapshot, Update};
 
 mod icon;
-mod layout;
+mod niri;
 mod state;
 mod snapshot;
 
