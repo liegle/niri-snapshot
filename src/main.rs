@@ -1,25 +1,25 @@
 //! Print niri current state like:
 //! ```json
 //! {
-//!     "focused_workspace_id": 4, // u64
-//!     "focused_window_id": 15, // u64
+//!     "focused_workspace_id": 1,
+//!     "focused_window_id": 1,
 //!     "HDMI-A-1": [
 //!         {
-//!             id: 8, // u64
-//!             active_window_id: 2, // u64
-//!             urgent: false,
-//!             active: false,
-//!             columns: [
+//!             "id": 1,
+//!             "active_window_id": 1,
+//!             "urgent": false,
+//!             "active": true,
+//!             "columns": [
 //!                 [
 //!                     {
-//!                         id: 55, // u64
-//!                         title: "firefox",
-//!                         urgent: false,
-//!                         icon: "path/to/icon"
+//!                         "id": 1,
+//!                         "title": "firefox",
+//!                         "urgent": false,
+//!                         "icon": "/usr/share/icons/hicolor/16x16/apps/firefox.png"
 //!                     }
 //!                 ]
 //!             ],
-//!             floatings: []
+//!             "floatings": []
 //!         }
 //!     ]
 //! }

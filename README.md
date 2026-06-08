@@ -8,59 +8,96 @@ Now it is almost usable but may encounter bugs.
 [2]: https://crates.io/crates/niri-ipc
 [3]: https://github.com/elkowar/eww
 
-## Example Usage
+## Usage
+Simply run the binary: `niri-snapshot` to print json.
+
+The json will be printed in one line, with format like:
+```json
+{
+    "focused_workspace_id": 1,
+    "focused_window_id": 1,
+    "HDMI-A-1": [
+        {
+            "id": 1,
+            "active_window_id": 1,
+            "urgent": false,
+            "active": true,
+            "columns": [
+                [
+                    {
+                        "id": 1,
+                        "title": "firefox",
+                        "urgent": false,
+                        "icon": "/usr/share/icons/hicolor/16x16/apps/firefox.png"
+                    }
+                ]
+            ],
+            "floatings": []
+        }
+    ]
+}
+```
+
+Currently there is also a command to switch niri workspace with id: `niri-snapshot ws <ID>`
+
+It will be removed when this [issue][1] is complete: 
+
+[1]: https://github.com/niri-wm/niri/issues/647
+
+## Example Eww Config
 
 ```yuck
 (deflisten NIRI_SNAPSHOT
     :initial '{"focused_workspace_id":-1,"focused_window_id":-1}'
     `niri-snapshot`)
-(defwidget wm-m [w]
+(defwidget niri-w [w]
     (tooltip
         (box
             :class 'tooltip'
             { w.title })
         (eventbox
             :width 24
-            :class { w.urgent ? 'wmwurgent' : w.id == NIRI_SNAPSHOT.focused_window_id ? 'wmwfocused' : 'wmw' }
+            :class { w.urgent ? 'niriwurgent' : w.id == NIRI_SNAPSHOT.focused_window_id ? 'niriwfocused' : 'niriw' }
             :onclick 'niri msg action focus-window --id ${w.id}'
             (literal
                 :valign 'center'
                 :content { w.icon == '' ? '"󰘔"' : '(image :image-width 16 :image-height 16 :icon-size 16 :path { "${w.icon}" })' }))))
-(defwidget wm-column [column]
+(defwidget niri-col [col]
     (box
-        :class 'wmcolumn'
-        :visible { arraylength(column) > 0 }
-        (for w in column
-            (wm-m
+        :class 'niricol'
+        :visible { arraylength(col) > 0 }
+        (for w in col
+            (niri-w
                 :w { w }))))
-(defwidget wm-ws [ws]
+(defwidget niri-ws [ws]
     (box
-        :class { ws.active ? 'wmws' : '' }
+        :class { ws.active ? 'niriws' : '' }
         :space-evenly false
         (tooltip
-            (bi-tooltip
+            (chart
                 :length 15
                 :header ''
-                :list '[{"key":"ID","value":${ws.id}},{"key":"COLUMNS","value":${arraylength(ws.columns)}}]')
+                :list '[{"key":"ID","values":[${ws.id}]},{"key":"COLUMNS","values":[${arraylength(ws.columns)}]}]')
             (eventbox
                 :width 32
-                :class { ws.urgent ? 'wmwsiconurgent' : ws.id == NIRI_SNAPSHOT.focused_workspace_id ? 'wmwsiconfocused' : 'wmwsicon' }
+                :class { ws.urgent ? 'niriwsiconurgent' : ws.id == NIRI_SNAPSHOT.focused_workspace_id ? 'niriwsiconfocused' : 'niriwsicon' }
                 ; https://github.com/niri-wm/niri/issues/647
                 :onclick { ws.active ? '' : 'niri-snapshot ws ${ws.id}' }
                 { ws.active ? '󰜋' : '' }))
         (box
             :spacing 4
+            :visible { ws.active }
             :space-evenly false
-            (for column in { ws.columns }
-                (wm-column
-                    :column { column }))
-            (wm-column
-                :column { ws.floatings }))))
-(defwidget wm [output]
+            (for col in { ws.columns }
+                (niri-col
+                    :col { col }))
+            (niri-col
+                :col { ws.floatings }))))
+(defwidget niri [output]
     (box
-        :class 'wm'
+        :class 'niri'
         :space-evenly false
-        (for ws in { NIRI_SNAPSHOT.outputs['${output}'] }
-            (wm-ws
+        (for ws in { NIRI_SNAPSHOT.outputs?.['${output}'] }
+            (niri-ws
                 :ws { ws }))))
 ```

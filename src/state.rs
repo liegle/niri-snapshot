@@ -47,6 +47,8 @@ impl State {
 
     #[cfg(feature = "verify")]
     pub fn verify(&self, state: &niri_ipc::state::EventStreamState) {
+        use std::rc::Weak;
+
         let mut sb = Vec::new();
 
         let workspaces = &state.workspaces.workspaces;
