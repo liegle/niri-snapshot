@@ -1,8 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
-    fs::DirEntry,
-    path::PathBuf,
-    sync::LazyLock,
+    collections::{HashMap, HashSet}, fs::DirEntry, path::PathBuf, str::FromStr, sync::LazyLock
 };
 
 const PREFER_SIZE: i32 = 16;
@@ -21,6 +18,22 @@ static XDG_DATA_DIRS: LazyLock<Vec<PathBuf>> = LazyLock::new(|| {
             ["/usr/share", "/usr/local/share"]
                 .into_iter()
                 .map(PathBuf::from),
+        );
+    }
+
+    dirs
+});
+
+static EXTRA_ICON_DIRS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    let mut dirs = Vec::new();
+
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(
+            PathBuf::from(home)
+                .join(".local/share/icons")
+                .to_str()
+                .unwrap()
+                .to_string(),
         );
     }
 
@@ -48,30 +61,52 @@ impl IconCache {
         let Some(key) = key else {
             return None;
         };
-        let mut key = key.to_ascii_lowercase();
-        key.retain(|c| !c.is_ascii() || c.is_ascii_alphabetic());
+        let mut key = key.to_owned();
+        simplify_key(&mut key);
         if let Some(path) = self.map.get(&key) {
             return Some(path.clone());
         }
-        let Some(icons) = self.known_icons.get(&key) else {
+
+        if let Some(icons) = self.known_icons.get(&key) {
+            for icon in icons {
+                if let Some(path) = self.lookup_icon(icon) {
+                    self.map.insert(key.to_string(), path.clone());
+                    return Some(path);
+                }
+            }
+        } else if let Some(steam_id) = key.strip_prefix("steam_app_") {
+            let mut icon = String::from_str("steam_icon_").unwrap();
+            icon.push_str(steam_id);
+            if let Some(path) = self.lookup_icon(&icon) {
+                self.map.insert(key.to_string(), path.clone());
+                return Some(path);
+            }
+
             return None;
-        };
-        for icon in icons {
-            for size in &self.known_sizes {
-                let mut paths = linicon::lookup_icon(&icon)
-                    .with_size(*size)
-                    .filter_map(Result::ok);
-                while let Some(path) = paths.next() {
-                    if let Some(path) = path.path.to_str() {
-                        let path = path.to_string();
-                        self.map.insert(key.to_string(), path.clone());
-                        return Some(path);
-                    }
+        }
+        None
+    }
+
+    fn lookup_icon(&self, icon: &String) -> Option<String> {
+        for size in &self.known_sizes {
+            let mut paths = linicon::lookup_icon(&icon)
+                .with_size(*size)
+                .with_search_paths(&EXTRA_ICON_DIRS)
+                .unwrap()
+                .filter_map(Result::ok);
+            while let Some(path) = paths.next() {
+                if let Some(path) = path.path.to_str() {
+                    let path = path.to_string();
+                    return Some(path);
                 }
             }
         }
         None
     }
+}
+
+fn simplify_key(key: &mut String) {
+    key.make_ascii_lowercase();
 }
 
 fn prepare_icon_names() -> HashMap<String, Vec<String>> {
@@ -105,14 +140,11 @@ fn prepare_icon_names() -> HashMap<String, Vec<String>> {
             if icons.is_empty() {
                 return;
             }
-            let Ok(mut name) = name.to_ascii_lowercase().into_string() else {
+            let Some(mut name) = name.to_str().map(str::to_string) else {
                 return;
             };
-            name.retain(|c| !c.is_ascii() || c.is_ascii_alphabetic());
-            known_icons.insert(
-                name.to_owned(),
-                icons.iter().map(String::clone).collect::<Vec<_>>(),
-            );
+            simplify_key(&mut name);
+            known_icons.insert(name, icons.iter().map(String::clone).collect::<Vec<_>>());
         });
     }
     known_icons
