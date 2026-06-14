@@ -107,6 +107,7 @@ impl IconCache {
 
 fn simplify_key(key: &mut String) {
     key.make_ascii_lowercase();
+    key.retain(|c| !c.is_ascii() || c.is_ascii_alphanumeric());
 }
 
 fn prepare_icon_names() -> HashMap<String, Vec<String>> {
