@@ -74,7 +74,7 @@ impl IconCache {
                     return Some(path);
                 }
             }
-        } else if let Some(steam_id) = key.strip_prefix("steam_app_") {
+        } else if let Some(steam_id) = key.strip_prefix("steamapp") {
             let mut icon = String::from_str("steam_icon_").unwrap();
             icon.push_str(steam_id);
             if let Some(path) = self.lookup_icon(&icon) {
