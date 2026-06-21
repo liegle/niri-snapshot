@@ -40,9 +40,9 @@ The json will be printed in one line, with format like:
 
 Currently there is also a command to switch niri workspace with id: `niri-snapshot ws <ID>`
 
-It will be removed when this [issue][1] is complete: 
+It will be removed when this [issue][4] is complete: 
 
-[1]: https://github.com/niri-wm/niri/issues/647
+[4]: https://github.com/niri-wm/niri/issues/647
 
 ## Example Eww Config
 
