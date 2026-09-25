@@ -204,8 +204,6 @@ impl State {
         for s in sb {
             eprintln!("\x1B[31m{s}\x1B[0m");
         }
-
-        eprintln!("\x1B[32m{:?}\x1B[0m", self.icon_cache);
     }
 
     pub fn update(&mut self, evt: &niri_ipc::Event) -> Update {
@@ -439,10 +437,13 @@ impl State {
         };
         for workspace in self.workspaces.values_mut() {
             let mut workspace = workspace.borrow_mut();
-            workspace
-                .columns
-                .iter_mut()
-                .for_each(|c| c.retain(|w| w.0.strong_count() != 0));
+            workspace.columns.iter_mut().for_each(|c| {
+                c.truncate(
+                    c.iter()
+                        .rposition(|w| w.0.strong_count() != 0)
+                        .map_or(0, |idx| idx + 1),
+                )
+            });
             workspace.columns.retain(|c| !c.is_empty());
             workspace.floatings.retain(|w| w.0.strong_count() != 0);
         }

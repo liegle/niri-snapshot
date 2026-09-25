@@ -65,6 +65,8 @@ impl IconCache {
     }
 
     pub fn lookup(&mut self, key: &Option<String>) -> Option<String> {
+        #[cfg(feature = "verify")]
+        eprintln!("\x1B[32m{:?}\x1B[0m", &self);
         let Some(key) = key else {
             return None;
         };
