@@ -41,8 +41,8 @@ use crate::snapshot::{Snapshot, Update};
 
 mod icon;
 mod niri;
-mod state;
 mod snapshot;
+mod state;
 
 fn main() -> io::Result<()> {
     let args = env::args().collect::<Vec<String>>();

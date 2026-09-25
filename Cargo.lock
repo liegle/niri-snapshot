@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "niri-snapshot"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "freedesktop_entry_parser 2.0.1",
  "linicon",

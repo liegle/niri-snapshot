@@ -1,5 +1,11 @@
 use std::{
-    collections::{HashMap, HashSet}, fs::DirEntry, path::PathBuf, str::FromStr, sync::LazyLock
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    fs::DirEntry,
+    path::PathBuf,
+    rc::Rc,
+    str::FromStr,
+    sync::LazyLock,
 };
 
 const PREFER_SIZE: i32 = 16;
@@ -40,8 +46,9 @@ static EXTRA_ICON_DIRS: LazyLock<Vec<String>> = LazyLock::new(|| {
     dirs
 });
 
+#[derive(Debug)]
 pub struct IconCache {
-    known_icons: HashMap<String, Vec<String>>,
+    known_icons: HashMap<String, Rc<RefCell<Vec<String>>>>,
     known_sizes: Vec<u16>,
     map: HashMap<String, String>,
 }
@@ -68,7 +75,7 @@ impl IconCache {
         }
 
         if let Some(icons) = self.known_icons.get(&key) {
-            for icon in icons {
+            for icon in icons.borrow().iter() {
                 if let Some(path) = self.lookup_icon(icon) {
                     self.map.insert(key.to_string(), path.clone());
                     return Some(path);
@@ -110,7 +117,7 @@ fn simplify_key(key: &mut String) {
     key.retain(|c| !c.is_ascii() || c.is_ascii_alphanumeric());
 }
 
-fn prepare_icon_names() -> HashMap<String, Vec<String>> {
+fn prepare_icon_names() -> HashMap<String, Rc<RefCell<Vec<String>>>> {
     let mut known_icons = HashMap::new();
     for dir in XDG_DATA_DIRS.iter() {
         let dir = dir.join("applications");
@@ -141,11 +148,21 @@ fn prepare_icon_names() -> HashMap<String, Vec<String>> {
             if icons.is_empty() {
                 return;
             }
+            let icons = Rc::new(RefCell::new(
+                icons.iter().map(String::clone).collect::<Vec<_>>(),
+            ));
             let Some(mut name) = name.to_str().map(str::to_string) else {
                 return;
             };
             simplify_key(&mut name);
-            known_icons.insert(name, icons.iter().map(String::clone).collect::<Vec<_>>());
+            known_icons.insert(name, icons.clone());
+            if let Some(class) = entry.get("Desktop Entry", "StartupWMClass") {
+                class.iter().for_each(|s| {
+                    let mut s = s.clone();
+                    simplify_key(&mut s);
+                    known_icons.insert(s, icons.clone());
+                });
+            }
         });
     }
     known_icons

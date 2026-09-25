@@ -1,9 +1,4 @@
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    convert::identity,
-    rc::Rc,
-};
+use std::{cell::RefCell, collections::HashMap, convert::identity, rc::Rc};
 
 use crate::{
     icon::IconCache,
@@ -209,6 +204,8 @@ impl State {
         for s in sb {
             eprintln!("\x1B[31m{s}\x1B[0m");
         }
+
+        eprintln!("\x1B[32m{:?}\x1B[0m", self.icon_cache);
     }
 
     pub fn update(&mut self, evt: &niri_ipc::Event) -> Update {

@@ -1,4 +1,7 @@
-use std::{cell::RefCell, rc::{Rc, Weak}};
+use std::{
+    cell::RefCell,
+    rc::{Rc, Weak},
+};
 
 #[derive(serde::Serialize, Debug, Default)]
 pub struct Workspace {
