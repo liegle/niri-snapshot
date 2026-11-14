@@ -66,7 +66,7 @@ impl Workspace {
             }
         } else {
             let floatings = &mut self.floatings;
-            floatings.retain(|w| w.0.upgrade().is_some_and(|w| w.borrow().id == id));
+            floatings.retain(|w| w.0.upgrade().is_some_and(|w| w.borrow().id != id));
         }
     }
 
